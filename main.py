@@ -43,23 +43,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_msg = await query.edit_message_text("Скачиваю...")
 
+    # Базовые настройки
     ydl_opts = {
         'outtmpl': 'downloads/%(title)s.%(ext)s',
-        'cookiefile': 'cookies.txt',  # <--- ДОБАВЬ ЭТУ СТРОКУ
+        'cookiefile': 'cookies.txt',
+        'merge_output_format': 'mp4', # Принудительно делаем MP4 на выходе
     }
     
     if quality == 'mp3':
         ydl_opts.update({
-            'format': 'bestaudio/best', 
+            'format': 'bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3'
-            }]
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
         })
     else:
-        # Здесь тоже убедись, что настройки верны
+        # Улучшенная строка выбора формата:
+        # Ищем лучшее видео (высота <= выбранной) + лучший звук
+        # Если такого нет, берем просто лучшее видео нужной высоты (одним файлом)
         ydl_opts.update({
-            'format': f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality}]'
+            'format': f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]',
         })
     try:
         if not os.path.exists('downloads'): os.makedirs('downloads')
