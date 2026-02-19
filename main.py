@@ -45,13 +45,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ydl_opts = {
         'outtmpl': 'downloads/%(title)s.%(ext)s',
+        'cookiefile': 'cookies.txt',  # <--- ДОБАВЬ ЭТУ СТРОКУ
     }
     
     if quality == 'mp3':
-        ydl_opts.update({'format': 'bestaudio/best', 'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3'}]})
+        ydl_opts.update({
+            'format': 'bestaudio/best', 
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3'
+            }]
+        })
     else:
-        ydl_opts.update({'format': f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality}]'})
-
+        # Здесь тоже убедись, что настройки верны
+        ydl_opts.update({
+            'format': f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/best[height<={quality}]'
+        })
     try:
         if not os.path.exists('downloads'): os.makedirs('downloads')
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
