@@ -6,7 +6,6 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# --- ВЕБ-СЕРВЕР ДЛЯ ПОДДЕРЖАНИЯ ЖИЗНИ ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -17,7 +16,6 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port)
 
-# --- ЛОГИКА БОТА ---
 TOKEN = os.getenv('BOT_TOKEN')
 
 BASE_YDL_OPTS = {
@@ -40,16 +38,63 @@ BASE_YDL_OPTS = {
     },
 }
 
-def try_download(url: str, quality: str) -> str:
-    """
-    Пробует несколько стратегий скачивания по очереди.
-    Возвращает путь к файлу или бросает исключение.
 
-    Ключевая идея: на серверных IP YouTube отдаёт только
-    'best' (готовый объединённый поток). Форматы типа
-    bestvideo+bestaudio там недоступны. Поэтому начинаем
-    с самого простого и идём к сложному.
-    """
+# ═══════════════════════════════════════════
+# ВРЕМЕННАЯ ДИАГНОСТИЧЕСКАЯ КОМАНДА /formats
+# Пришли: /formats https://youtu.be/z-PJGZ4iQZM
+# Она покажет что реально отдаёт YouTube с сервера Render
+# После диагностики можно удалить
+# ═══════════════════════════════════════════
+async def cmd_formats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Использование: /formats <ссылка>")
+        return
+
+    url = args[0]
+    await update.message.reply_text("Запрашиваю список форматов...")
+
+    opts = {
+        **BASE_YDL_OPTS,
+        'listformats': False,   # не печатать, а собрать в info
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        formats = info.get('formats', [])
+        if not formats:
+            await update.message.reply_text("Форматы не найдены!")
+            return
+
+        lines = ["<b>Доступные форматы:</b>\n"]
+        for f in formats:
+            fid    = f.get('format_id', '?')
+            ext    = f.get('ext', '?')
+            height = f.get('height') or '-'
+            vcodec = f.get('vcodec', 'none')
+            acodec = f.get('acodec', 'none')
+            note   = f.get('format_note', '')
+            has_v  = '🎬' if vcodec != 'none' else '  '
+            has_a  = '🔊' if acodec != 'none' else '  '
+            lines.append(f"{has_v}{has_a} <code>{fid:>10}</code> | {ext:<4} | {str(height):>4}p | {note}")
+
+        # Telegram ограничивает 4096 символов — режем если нужно
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:4000] + "\n... (обрезано)"
+
+        await update.message.reply_text(text, parse_mode='HTML')
+
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при получении форматов:\n{e}")
+
+
+def try_download(url: str, quality: str) -> str:
     os.makedirs('downloads', exist_ok=True)
 
     if quality == 'mp3':
@@ -61,11 +106,8 @@ def try_download(url: str, quality: str) -> str:
         ]
     else:
         strategies = [
-            # Стратегия 1: готовый файл нужного качества — без склейки ffmpeg
             {'format': f'best[height<={quality}]/best'},
-            # Стратегия 2: явно mp4
             {'format': f'best[height<={quality}][ext=mp4]/best[ext=mp4]/best'},
-            # Стратегия 3: склейка через ffmpeg (требует ffmpeg)
             {'format': f'bestvideo[height<={quality}]+bestaudio/bestvideo+bestaudio',
              'merge_output_format': 'mp4'},
         ]
@@ -90,8 +132,8 @@ def try_download(url: str, quality: str) -> str:
         except yt_dlp.utils.DownloadError as e:
             last_error = e
             if 'Requested format is not available' in str(e):
-                continue  # пробуем следующую стратегию
-            raise  # другие ошибки сразу пробрасываем
+                continue
+            raise
 
     raise Exception(f"Все стратегии исчерпаны. Последняя ошибка: {last_error}")
 
@@ -149,6 +191,7 @@ if __name__ == '__main__':
 
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("formats", cmd_formats))   # <-- диагностика
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.run_polling()
