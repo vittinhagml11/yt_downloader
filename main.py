@@ -75,8 +75,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }],
         })
     else:
+        # Максимально широкая цепочка: сначала готовый mp4 нужного качества,
+        # потом любой mp4, потом вообще любой формат — лишь бы скачалось
         ydl_opts.update({
-            'format': f'best[height<={quality}][ext=mp4]/best[height<={quality}]/best[ext=mp4]/best',
+            'format': (
+                f'bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]'
+                f'/bestvideo[height<={quality}]+bestaudio'
+                f'/best[height<={quality}]'
+                f'/bestvideo[ext=mp4]+bestaudio[ext=m4a]'
+                f'/bestvideo+bestaudio'
+                f'/best'
+            ),
+            # Если склеиваем потоки — мержим в mp4
+            'merge_output_format': 'mp4',
         })
 
     try:
