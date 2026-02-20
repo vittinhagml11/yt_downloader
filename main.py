@@ -20,29 +20,42 @@ GH_TOKEN    = os.getenv('GITHUB_TOKEN')   # Personal Access Token с право�
 GH_REPO     = os.getenv('GITHUB_REPO')    # формат: username/repo-name
 
 def trigger_github_action(url, quality, chat_id):
-    github_token = "ТВОЙ_GITHUB_PERSONAL_ACCESS_TOKEN" # Нужно создать в настройках GitHub
-    repo = "vittinhagml11/yt_downloader"
-    
+    # Команда os.getenv берет значение из раздела Environment на Render
+    # .strip() убирает случайные пробелы, которые могли попасть при вставке
+    github_token = os.getenv('GITHUB_TOKEN')
+    repo = os.getenv('GITHUB_REPO')
+
+    # Проверка: если токен не подтянулся из настроек Render
+    if not github_token or not repo:
+        print("ОШИБКА: Переменные GITHUB_TOKEN или GITHUB_REPO не найдены в настройках Render!")
+        return False
+
     headers = {
-        "Authorization": f"token {github_token}",
+        # Python подставит сюда значение из переменной github_token
+        "Authorization": f"token {github_token.strip()}",
         "Accept": "application/vnd.github.v3+json",
     }
     
     data = {
-        "event_type": "download_video", # Должно совпадать с 'types' в YAML
+        "event_type": "download_video",
         "client_payload": {
-            "url": url,
-            "quality": quality,
-            "chat_id": chat_id
+            "url": str(url),
+            "quality": str(quality),
+            "chat_id": str(chat_id)
         }
     }
     
-    response = requests.post(
-        f"https://api.github.com/repos/{repo}/dispatches",
-        json=data,
-        headers=headers
-    )
-    return response.status_code
+    try:
+        response = requests.post(
+            f"https://api.github.com/repos/{repo.strip()}/dispatches",
+            json=data,
+            headers=headers,
+            timeout=10
+        )
+        return response.status_code == 204
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Пришли ссылку на YouTube-видео.")
