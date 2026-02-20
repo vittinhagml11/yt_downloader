@@ -1,0 +1,86 @@
+name: Download Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL'
+        required: true
+      quality:
+        description: 'Quality (720, 480, mp3)'
+        required: true
+      chat_id:
+        description: 'Telegram chat_id'
+        required: true
+      bot_token:
+        description: 'Telegram bot token'
+        required: true
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y ffmpeg
+          pip install yt-dlp
+
+      - name: Download
+        id: download
+        run: |
+          mkdir downloads
+
+          if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
+            FORMAT="bestaudio/best"
+            POSTPROCESS="--extract-audio --audio-format mp3"
+          else
+            Q="${{ github.event.inputs.quality }}"
+            FORMAT="best[height<=${Q}]/best"
+            POSTPROCESS=""
+          fi
+
+          yt-dlp \
+            --format "$FORMAT" \
+            $POSTPROCESS \
+            --output "downloads/%(id)s.%(ext)s" \
+            --no-playlist \
+            "${{ github.event.inputs.url }}"
+
+          FILE=$(ls downloads/ | head -1)
+          echo "filename=downloads/$FILE" >> $GITHUB_OUTPUT
+          SIZE=$(du -m "downloads/$FILE" | cut -f1)
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+
+      - name: Send to Telegram
+        run: |
+          FILE="${{ steps.download.outputs.filename }}"
+          SIZE="${{ steps.download.outputs.size }}"
+          CHAT_ID="${{ github.event.inputs.chat_id }}"
+          TOKEN="${{ github.event.inputs.bot_token }}"
+
+          if [ "$SIZE" -gt 50 ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+              -d chat_id="$CHAT_ID" \
+              -d text="❌ Файл слишком большой (${SIZE} МБ). Telegram принимает максимум 50 МБ."
+            exit 0
+          fi
+
+          if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" \
+              -F chat_id="$CHAT_ID" \
+              -F audio=@"$FILE"
+          else
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
+              -F chat_id="$CHAT_ID" \
+              -F video=@"$FILE" \
+              -F supports_streaming=true
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ github.event.inputs.bot_token }}/sendMessage" \
+            -d chat_id="${{ github.event.inputs.chat_id }}" \
+            -d text="❌ Ошибка при скачивании. Попробуй другое видео или качество."
