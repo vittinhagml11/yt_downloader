@@ -1,6 +1,7 @@
 import os
 import glob
 import threading
+import requests
 from flask import Flask
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,128 +19,125 @@ def run_flask():
 
 TOKEN = os.getenv('BOT_TOKEN')
 
-BASE_YDL_OPTS = {
-    'outtmpl': 'downloads/%(id)s.%(ext)s',
-    'cookiefile': 'cookies.txt',
-    'nocheckcertificate': True,
-    'source_address': '0.0.0.0',
-    'socket_timeout': 30,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['web_creator', 'web', 'android', 'ios'],
-        }
-    },
-    'http_headers': {
-        'User-Agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/120.0.0.0 Safari/537.36'
-        ),
-    },
-}
+# Публичные Invidious-инстансы — они делают запросы к YouTube от своего имени,
+# обходя блокировку датацентровых IP Render.
+# Если один не работает — пробуем следующий.
+INVIDIOUS_INSTANCES = [
+    "https://invidious.nerdvpn.de",
+    "https://inv.nadeko.net",
+    "https://invidious.privacyredirect.com",
+    "https://yt.cdaut.de",
+    "https://invidious.fdn.fr",
+]
+
+def get_video_id(url: str) -> str:
+    """Извлекает video_id из любой YouTube-ссылки."""
+    import re
+    patterns = [
+        r'(?:v=|youtu\.be/|embed/|shorts/)([a-zA-Z0-9_-]{11})',
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    raise ValueError(f"Не удалось извлечь video_id из: {url}")
 
 
-# ═══════════════════════════════════════════
-# ВРЕМЕННАЯ ДИАГНОСТИЧЕСКАЯ КОМАНДА /formats
-# Пришли: /formats https://youtu.be/z-PJGZ4iQZM
-# Она покажет что реально отдаёт YouTube с сервера Render
-# После диагностики можно удалить
-# ═══════════════════════════════════════════
-async def cmd_formats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        await update.message.reply_text("Использование: /formats <ссылка>")
-        return
-
-    url = args[0]
-    await update.message.reply_text("Запрашиваю список форматов...")
-
-    opts = {
-        **BASE_YDL_OPTS,
-        'listformats': False,   # не печатать, а собрать в info
-        'quiet': True,
-        'no_warnings': True,
-        'skip_download': True,
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-        formats = info.get('formats', [])
-        if not formats:
-            await update.message.reply_text("Форматы не найдены!")
-            return
-
-        lines = ["<b>Доступные форматы:</b>\n"]
-        for f in formats:
-            fid    = f.get('format_id', '?')
-            ext    = f.get('ext', '?')
-            height = f.get('height') or '-'
-            vcodec = f.get('vcodec', 'none')
-            acodec = f.get('acodec', 'none')
-            note   = f.get('format_note', '')
-            has_v  = '🎬' if vcodec != 'none' else '  '
-            has_a  = '🔊' if acodec != 'none' else '  '
-            lines.append(f"{has_v}{has_a} <code>{fid:>10}</code> | {ext:<4} | {str(height):>4}p | {note}")
-
-        # Telegram ограничивает 4096 символов — режем если нужно
-        text = "\n".join(lines)
-        if len(text) > 4000:
-            text = text[:4000] + "\n... (обрезано)"
-
-        await update.message.reply_text(text, parse_mode='HTML')
-
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка при получении форматов:\n{e}")
-
-
-def try_download(url: str, quality: str) -> str:
-    os.makedirs('downloads', exist_ok=True)
-
-    if quality == 'mp3':
-        strategies = [
-            {'format': 'bestaudio/best',
-             'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]},
-            {'format': 'best',
-             'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3'}]},
-        ]
-    else:
-        strategies = [
-            {'format': f'best[height<={quality}]/best'},
-            {'format': f'best[height<={quality}][ext=mp4]/best[ext=mp4]/best'},
-            {'format': f'bestvideo[height<={quality}]+bestaudio/bestvideo+bestaudio',
-             'merge_output_format': 'mp4'},
-        ]
-
+def get_stream_url_via_invidious(video_id: str, quality: str) -> tuple[str, str, str]:
+    """
+    Запрашивает у Invidious прямые ссылки на стримы.
+    Возвращает (stream_url, title, ext).
+    """
     last_error = None
-    for strategy in strategies:
-        opts = {**BASE_YDL_OPTS, **strategy}
+    for instance in INVIDIOUS_INSTANCES:
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                video_id = info['id']
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            resp = requests.get(api_url, timeout=15)
+            if resp.status_code != 200:
+                continue
+
+            data = resp.json()
+            title = data.get('title', video_id)
+            adaptive_formats = data.get('adaptiveFormats', [])
+            format_streams = data.get('formatStreams', [])  # готовые объединённые потоки
 
             if quality == 'mp3':
-                candidates = glob.glob(f'downloads/{video_id}.mp3')
+                # Берём лучший аудио-поток
+                audio_formats = [f for f in adaptive_formats if f.get('type', '').startswith('audio')]
+                if not audio_formats:
+                    continue
+                # Сортируем по битрейту
+                audio_formats.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
+                best = audio_formats[0]
+                return best['url'], title, 'mp3'
             else:
-                candidates = glob.glob(f'downloads/{video_id}.*')
-            if not candidates:
-                candidates = glob.glob(f'downloads/{video_id}*')
-            if candidates:
-                return candidates[0]
+                target_height = int(quality)
+                # Сначала ищем в готовых объединённых потоках (видео+аудио вместе)
+                video_streams = [
+                    f for f in format_streams
+                    if f.get('type', '').startswith('video')
+                ]
+                # Сортируем по качеству (убывание) и берём подходящее
+                video_streams.sort(key=lambda x: int(x.get('resolution', '0p').replace('p', '') or 0), reverse=True)
+                for s in video_streams:
+                    res = int(s.get('resolution', '0p').replace('p', '') or 0)
+                    if res <= target_height:
+                        ext = 'mp4' if 'mp4' in s.get('type', '') else 'webm'
+                        return s['url'], title, ext
 
-        except yt_dlp.utils.DownloadError as e:
+                # Если не нашли — берём просто лучший из format_streams
+                if video_streams:
+                    s = video_streams[-1]  # наименьшее качество как запасной
+                    ext = 'mp4' if 'mp4' in s.get('type', '') else 'webm'
+                    return s['url'], title, ext
+
+        except Exception as e:
             last_error = e
-            if 'Requested format is not available' in str(e):
-                continue
-            raise
+            continue
 
-    raise Exception(f"Все стратегии исчерпаны. Последняя ошибка: {last_error}")
+    raise Exception(f"Все Invidious-инстансы недоступны. Последняя ошибка: {last_error}")
+
+
+def download_via_invidious(url: str, quality: str) -> str:
+    """Скачивает файл через Invidious и возвращает путь."""
+    os.makedirs('downloads', exist_ok=True)
+    video_id = get_video_id(url)
+    stream_url, title, ext = get_stream_url_via_invidious(video_id, quality)
+
+    # Для mp3 — скачиваем аудио и конвертируем через ffmpeg
+    if quality == 'mp3':
+        tmp_path = f'downloads/{video_id}.tmp_audio'
+        out_path = f'downloads/{video_id}.mp3'
+    else:
+        out_path = f'downloads/{video_id}.{ext}'
+
+    # Скачиваем через requests с прогрессом
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    with requests.get(stream_url, headers=headers, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        path = tmp_path if quality == 'mp3' else out_path
+        with open(path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=1024 * 256):
+                f.write(chunk)
+
+    # Конвертируем в mp3 если нужно
+    if quality == 'mp3':
+        import subprocess
+        result = subprocess.run(
+            ['ffmpeg', '-y', '-i', tmp_path, '-vn', '-ar', '44100', '-ac', '2', '-b:a', '192k', out_path],
+            capture_output=True, text=True
+        )
+        os.remove(tmp_path)
+        if result.returncode != 0:
+            raise Exception(f"ffmpeg ошибка: {result.stderr[-300:]}")
+
+    return out_path
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Пришли ссылку на YouTube!")
+    await update.message.reply_text(
+        "Привет! Пришли ссылку на YouTube-видео и выбери формат."
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
@@ -160,10 +158,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = context.user_data.get('current_url')
     quality = query.data
 
-    await query.edit_message_text("⏳ Скачиваю, подожди...")
+    await query.edit_message_text("⏳ Скачиваю через Invidious, подожди...")
 
     try:
-        filename = try_download(url, quality)
+        filename = download_via_invidious(url, quality)
         file_size_mb = os.path.getsize(filename) / (1024 * 1024)
 
         if file_size_mb > 50:
@@ -191,7 +189,6 @@ if __name__ == '__main__':
 
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("formats", cmd_formats))   # <-- диагностика
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.run_polling()
