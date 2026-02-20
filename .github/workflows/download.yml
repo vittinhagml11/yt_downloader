@@ -22,10 +22,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt-get install -y ffmpeg
-          pip install yt-dlp
+      - name: Install ffmpeg
+        run: sudo apt-get install -y --fix-missing ffmpeg
+
+      - name: Install yt-dlp
+        run: pip install -U yt-dlp
 
       - name: Download
         id: download
@@ -33,20 +34,20 @@ jobs:
           mkdir downloads
 
           if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
-            FORMAT="bestaudio/best"
-            POSTPROCESS="--extract-audio --audio-format mp3"
+            yt-dlp \
+              --format "bestaudio/best" \
+              --extract-audio --audio-format mp3 \
+              --output "downloads/%(id)s.%(ext)s" \
+              --no-playlist \
+              "${{ github.event.inputs.url }}"
           else
             Q="${{ github.event.inputs.quality }}"
-            FORMAT="best[height<=${Q}]/best"
-            POSTPROCESS=""
+            yt-dlp \
+              --format "best[height<=${Q}]/best" \
+              --output "downloads/%(id)s.%(ext)s" \
+              --no-playlist \
+              "${{ github.event.inputs.url }}"
           fi
-
-          yt-dlp \
-            --format "$FORMAT" \
-            $POSTPROCESS \
-            --output "downloads/%(id)s.%(ext)s" \
-            --no-playlist \
-            "${{ github.event.inputs.url }}"
 
           FILE=$(ls downloads/ | head -1)
           echo "filename=downloads/$FILE" >> $GITHUB_OUTPUT
