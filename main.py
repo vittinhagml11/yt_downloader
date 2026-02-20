@@ -43,11 +43,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     status_msg = await query.edit_message_text("Скачиваю...")
 
-    # Базовые настройки
     ydl_opts = {
         'outtmpl': 'downloads/%(title)s.%(ext)s',
         'cookiefile': 'cookies.txt',
-        'merge_output_format': 'mp4', # Принудительно делаем MP4 на выходе
+        'merge_output_format': 'mp4',
     }
     
     if quality == 'mp3':
@@ -56,15 +55,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '192',
             }],
         })
     else:
-        # Улучшенная строка выбора формата:
-        # Ищем лучшее видео (высота <= выбранной) + лучший звук
-        # Если такого нет, берем просто лучшее видео нужной высоты (одним файлом)
+        # Сначала пробуем скачать один готовый файл (single file), 
+        # где видео и звук уже вместе — это надежнее всего для серверов.
+        # Если такого нет, пробуем склеить лучшее видео + звук.
         ydl_opts.update({
-            'format': f'bestvideo[height<={quality}]+bestaudio/best[height<={quality}]',
+            'format': f'best[height<={quality}][ext=mp4]/bestvideo[height<={quality}]+bestaudio/best',
         })
     try:
         if not os.path.exists('downloads'): os.makedirs('downloads')
@@ -87,6 +85,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(query.message.chat_id, f"Ошибка: {e}")
 
 if __name__ == '__main__':
+    import shutil
+    print(f"Проверка FFmpeg: {shutil.which('ffmpeg')}") # Должно вывести путь, если он есть
     # Запускаем Flask в отдельном потоке
     threading.Thread(target=run_flask, daemon=True).start()
     
