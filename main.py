@@ -19,26 +19,30 @@ TOKEN       = os.getenv('BOT_TOKEN')
 GH_TOKEN    = os.getenv('GITHUB_TOKEN')   # Personal Access Token с правом actions:write
 GH_REPO     = os.getenv('GITHUB_REPO')    # формат: username/repo-name
 
-def trigger_github_action(url: str, quality: str, chat_id: str) -> bool:
-    """Запускает workflow через GitHub API."""
-    api_url = f"https://api.github.com/repos/{GH_REPO}/actions/workflows/download.yml/dispatches"
+def trigger_github_action(url, quality, chat_id):
+    github_token = "ТВОЙ_GITHUB_PERSONAL_ACCESS_TOKEN" # Нужно создать в настройках GitHub
+    repo = "vittinhagml11/yt_downloader"
+    
     headers = {
-        "Authorization": f"Bearer {GH_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json",
     }
-    payload = {
-        "ref": "main",   # ветка — поменяй если у тебя master
-        "inputs": {
-            "url":       url,
-            "quality":   quality,
-            "chat_id":   str(chat_id),
-            "bot_token": TOKEN,
+    
+    data = {
+        "event_type": "download_video", # Должно совпадать с 'types' в YAML
+        "client_payload": {
+            "url": url,
+            "quality": quality,
+            "chat_id": chat_id
         }
     }
-    resp = requests.post(api_url, json=payload, headers=headers, timeout=10)
-    return resp.status_code == 204  # 204 = успешно запущен
-
+    
+    response = requests.post(
+        f"https://api.github.com/repos/{repo}/dispatches",
+        json=data,
+        headers=headers
+    )
+    return response.status_code
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Пришли ссылку на YouTube-видео.")
