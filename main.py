@@ -1,5 +1,5 @@
 import os
-import asyncio
+import glob
 import threading
 from flask import Flask
 import yt_dlp
@@ -14,7 +14,6 @@ def home():
     return "I'm alive!"
 
 def run_flask():
-    # Render дает порт в переменной окружения PORT
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port)
 
@@ -30,7 +29,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Это не ссылка на YouTube.")
         return
     context.user_data['current_url'] = url
-    keyboard = [[InlineKeyboardButton("720p", callback_data='720'), 
+    keyboard = [[InlineKeyboardButton("720p", callback_data='720'),
                  InlineKeyboardButton("480p", callback_data='480')],
                 [InlineKeyboardButton("MP3", callback_data='mp3')]]
     await update.message.reply_text("Качество:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -40,24 +39,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     url = context.user_data.get('current_url')
     quality = query.data
-    
-    status_msg = await query.edit_message_text("Скачиваю...")
 
+    await query.edit_message_text("Скачиваю...")
+
+    if not os.path.exists('downloads'):
+        os.makedirs('downloads')
+
+    # Базовые настройки — ключевые параметры для обхода блокировок на серверах
     ydl_opts = {
-        'outtmpl': 'downloads/%(title)s.%(ext)s',
+        'outtmpl': 'downloads/%(id)s.%(ext)s',  # используем id вместо title — нет проблем с кодировкой
         'cookiefile': 'cookies.txt',
-        'format': 'best[ext=mp4]/best', 
+        'nocheckcertificate': True,
+        'source_address': '0.0.0.0',
         'extractor_args': {
             'youtube': {
-                # Используем VR-клиент, он сейчас самый стабильный против 429
-                'player_client': ['android_vr', 'android'],
-                'player_skip': ['webpage', 'authcheck'],
+                # web_creator обходит серверные блокировки лучше всего в 2024-2025
+                'player_client': ['web_creator', 'web', 'android'],
             }
         },
-        # Принудительный IPv4 (помогает против 429)
-        'source_address': '0.0.0.0',
+        'http_headers': {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/120.0.0.0 Safari/537.36'
+            ),
+        },
     }
-    
+
     if quality == 'mp3':
         ydl_opts.update({
             'format': 'bestaudio/best',
@@ -67,39 +75,53 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }],
         })
     else:
-        # Сначала пробуем скачать один готовый файл (single file), 
-        # где видео и звук уже вместе — это надежнее всего для серверов.
-        # Если такого нет, пробуем склеить лучшее видео + звук.
         ydl_opts.update({
-            'format': f'best[height<={quality}][ext=mp4]/bestvideo[height<={quality}]+bestaudio/best',
+            'format': f'best[height<={quality}][ext=mp4]/best[height<={quality}]/best[ext=mp4]/best',
         })
+
     try:
-        if not os.path.exists('downloads'): os.makedirs('downloads')
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            if quality == 'mp3': filename = os.path.splitext(filename)[0] + '.mp3'
+            video_id = info['id']
 
+        # Ищем файл по id — надёжнее чем prepare_filename после постпроцессинга
+        if quality == 'mp3':
+            pattern = f'downloads/{video_id}.mp3'
+        else:
+            pattern = f'downloads/{video_id}.*'
+
+        files = glob.glob(pattern)
+        if not files:
+            # Запасной вариант — любой файл с этим id
+            files = glob.glob(f'downloads/{video_id}*')
+
+        if not files:
+            await context.bot.send_message(query.message.chat_id, "Ошибка: файл не найден после скачивания.")
+            return
+
+        filename = files[0]
         file_size = os.path.getsize(filename) / (1024 * 1024)
+
         if file_size > 50:
-            await context.bot.send_message(query.message.chat_id, "Файл больше 50МБ!")
+            await context.bot.send_message(query.message.chat_id, f"Файл слишком большой ({file_size:.1f} МБ), Telegram не принимает файлы больше 50 МБ.")
         else:
             with open(filename, 'rb') as f:
                 if quality == 'mp3':
                     await context.bot.send_audio(chat_id=query.message.chat_id, audio=f)
                 else:
                     await context.bot.send_video(chat_id=query.message.chat_id, video=f)
+
         os.remove(filename)
+
     except Exception as e:
         await context.bot.send_message(query.message.chat_id, f"Ошибка: {e}")
 
+
 if __name__ == '__main__':
     import shutil
-    print(f"Проверка FFmpeg: {shutil.which('ffmpeg')}") # Должно вывести путь, если он есть
-    # Запускаем Flask в отдельном потоке
+    print(f"Проверка FFmpeg: {shutil.which('ffmpeg')}")
     threading.Thread(target=run_flask, daemon=True).start()
-    
-    # Запускаем бота
+
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
