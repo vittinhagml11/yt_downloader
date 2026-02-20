@@ -46,7 +46,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ydl_opts = {
         'outtmpl': 'downloads/%(title)s.%(ext)s',
         'cookiefile': 'cookies.txt',
-        'merge_output_format': 'mp4',
+        'format': 'best[ext=mp4]/best', 
+        'extractor_args': {
+            'youtube': {
+                # Используем VR-клиент, он сейчас самый стабильный против 429
+                'player_client': ['android_vr', 'android'],
+                'player_skip': ['webpage', 'authcheck'],
+            }
+        },
+        # Принудительный IPv4 (помогает против 429)
+        'source_address': '0.0.0.0',
     }
     
     if quality == 'mp3':
