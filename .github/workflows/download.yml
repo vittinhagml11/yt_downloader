@@ -29,8 +29,12 @@ jobs:
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
 
-      - name: Install yt-dlp
-        run: pip install -U yt-dlp
+      - name: Install yt-dlp and dependencies
+        run: |
+          pip install -U yt-dlp
+          # Проверяем node
+          node --version
+          npm --version
 
       - name: Write cookies
         run: echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
@@ -40,27 +44,27 @@ jobs:
         run: |
           mkdir downloads
 
-          # Node.js уже установлен на ubuntu-latest — указываем его явно
-          NODE_PATH=$(which node)
-          echo "Node: $NODE_PATH"
-
           if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
             yt-dlp \
               --cookies cookies.txt \
-              --js-runtimes "nodejs:$NODE_PATH" \
+              --js-runtimes "node" \
+              --extractor-args "youtube:player_client=web,android" \
               --format "bestaudio/best" \
               --extract-audio --audio-format mp3 \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist \
+              --verbose \
               "${{ github.event.inputs.url }}"
           else
             Q="${{ github.event.inputs.quality }}"
             yt-dlp \
               --cookies cookies.txt \
-              --js-runtimes "nodejs:$NODE_PATH" \
+              --js-runtimes "node" \
+              --extractor-args "youtube:player_client=web,android" \
               --format "best[height<=${Q}]/best" \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist \
+              --verbose \
               "${{ github.event.inputs.url }}"
           fi
 
