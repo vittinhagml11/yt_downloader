@@ -22,24 +22,32 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Install ffmpeg (static binary, no apt)
+      - name: Install ffmpeg (static binary)
         run: |
           wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
           tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
-          ffmpeg -version
 
       - name: Install yt-dlp
         run: pip install -U yt-dlp
+
+      - name: Write cookies
+        run: echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
 
       - name: Download
         id: download
         run: |
           mkdir downloads
 
+          # Node.js уже установлен на ubuntu-latest — указываем его явно
+          NODE_PATH=$(which node)
+          echo "Node: $NODE_PATH"
+
           if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
             yt-dlp \
+              --cookies cookies.txt \
+              --js-runtimes "nodejs:$NODE_PATH" \
               --format "bestaudio/best" \
               --extract-audio --audio-format mp3 \
               --output "downloads/%(id)s.%(ext)s" \
@@ -48,6 +56,8 @@ jobs:
           else
             Q="${{ github.event.inputs.quality }}"
             yt-dlp \
+              --cookies cookies.txt \
+              --js-runtimes "nodejs:$NODE_PATH" \
               --format "best[height<=${Q}]/best" \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist \
