@@ -29,12 +29,8 @@ jobs:
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
 
-      - name: Install yt-dlp and dependencies
-        run: |
-          pip install -U yt-dlp
-          # Проверяем node
-          node --version
-          npm --version
+      - name: Install yt-dlp
+        run: pip install -U yt-dlp
 
       - name: Write cookies
         run: echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
@@ -48,23 +44,23 @@ jobs:
             yt-dlp \
               --cookies cookies.txt \
               --js-runtimes "node" \
-              --extractor-args "youtube:player_client=web,android" \
+              --remote-components "ejs:github" \
+              --extractor-args "youtube:player_client=web" \
               --format "bestaudio/best" \
               --extract-audio --audio-format mp3 \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist \
-              --verbose \
               "${{ github.event.inputs.url }}"
           else
             Q="${{ github.event.inputs.quality }}"
             yt-dlp \
               --cookies cookies.txt \
               --js-runtimes "node" \
-              --extractor-args "youtube:player_client=web,android" \
+              --remote-components "ejs:github" \
+              --extractor-args "youtube:player_client=web" \
               --format "best[height<=${Q}]/best" \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist \
-              --verbose \
               "${{ github.event.inputs.url }}"
           fi
 
