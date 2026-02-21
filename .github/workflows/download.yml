@@ -1,45 +1,92 @@
-name: Download and Upload Video
+name: Download Video
 
 on:
-  repository_dispatch:
-    types: [download_video]
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL'
+        required: true
+      quality:
+        description: 'Quality (720, 480, mp3)'
+        required: true
+      chat_id:
+        description: 'Telegram chat_id'
+        required: true
+      bot_token:
+        description: 'Telegram bot token'
+        required: true
 
 jobs:
   download:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install dependencies
+      - name: Install ffmpeg (static binary, no apt)
         run: |
-          python -m pip install --upgrade pip
-          pip install yt-dlp requests
+          wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+          tar -xf ffmpeg-master-latest-linux64-gpl.tar.xz
+          sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
+          sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
+          ffmpeg -version
 
-      # FFmpeg уже есть в системе, просто проверяем версию
-      - name: Check FFmpeg
-        run: ffmpeg -version
+      - name: Install yt-dlp
+        run: pip install -U yt-dlp
 
-      - name: Download Video
-        env:
-          VIDEO_URL: ${{ github.event.client_payload.url }}
-          QUALITY: ${{ github.event.client_payload.quality }}
-          CHAT_ID: ${{ github.event.client_payload.chat_id }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      - name: Download
+        id: download
         run: |
-          # Скачиваем видео через yt-dlp
-          # Используем те же настройки, что мы обсуждали
-          yt-dlp -f "bestvideo[height<=$QUALITY][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" \
-                 --cookiefile cookies.txt \
-                 -o "video.mp4" \
-                 "$VIDEO_URL"
+          mkdir downloads
 
-          # Отправляем файл в Telegram через curl (это быстрее всего)
-          curl -v -F "chat_id=$CHAT_ID" \
-               -F "video=@video.mp4" \
-               "https://api.telegram.org/bot$BOT_TOKEN/sendVideo"
+          if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
+            yt-dlp \
+              --format "bestaudio/best" \
+              --extract-audio --audio-format mp3 \
+              --output "downloads/%(id)s.%(ext)s" \
+              --no-playlist \
+              "${{ github.event.inputs.url }}"
+          else
+            Q="${{ github.event.inputs.quality }}"
+            yt-dlp \
+              --format "best[height<=${Q}]/best" \
+              --output "downloads/%(id)s.%(ext)s" \
+              --no-playlist \
+              "${{ github.event.inputs.url }}"
+          fi
+
+          FILE=$(ls downloads/ | head -1)
+          echo "filename=downloads/$FILE" >> $GITHUB_OUTPUT
+          SIZE=$(du -m "downloads/$FILE" | cut -f1)
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+
+      - name: Send to Telegram
+        run: |
+          FILE="${{ steps.download.outputs.filename }}"
+          SIZE="${{ steps.download.outputs.size }}"
+          CHAT_ID="${{ github.event.inputs.chat_id }}"
+          TOKEN="${{ github.event.inputs.bot_token }}"
+
+          if [ "$SIZE" -gt 50 ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+              -d chat_id="$CHAT_ID" \
+              -d text="❌ Файл слишком большой (${SIZE} МБ). Telegram принимает максимум 50 МБ."
+            exit 0
+          fi
+
+          if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" \
+              -F chat_id="$CHAT_ID" \
+              -F audio=@"$FILE"
+          else
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
+              -F chat_id="$CHAT_ID" \
+              -F video=@"$FILE" \
+              -F supports_streaming=true
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ github.event.inputs.bot_token }}/sendMessage" \
+            -d chat_id="${{ github.event.inputs.chat_id }}" \
+            -d text="❌ Ошибка при скачивании. Попробуй другое видео или качество."
