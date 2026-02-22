@@ -247,5 +247,5 @@ if __name__ == '__main__':
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(inline_download_callback, pattern='^d_'))
     app.add_handler(CallbackQueryHandler(button_callback, pattern='^[yo]_'))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message))
     app.run_polling()
