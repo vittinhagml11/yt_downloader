@@ -124,31 +124,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # Проверка на None (сообщение могло быть удалено или изменено)
-    if query.message is None:
-        return
-    
-    url = context.user_data.get('current_url')
-    quality = query.data
-    chat_id = query.message.chat_id
+    """Обработка кнопок в ЛС бота."""
+    try:
+        query = update.callback_query
+        if query is None:
+            return
+        await query.answer()
+        
+        # Проверка на None (сообщение могло быть удалено или изменено)
+        if query.message is None:
+            return
+        
+        url = context.user_data.get('current_url')
+        quality = query.data
+        chat_id = query.message.chat_id
 
-    await query.edit_message_text(
-        "⏳ _Запускаю скачивание..._\n\n"
-        "📊 _Файл придёт через 1-2 минуты._",
-        parse_mode='Markdown'
-    )
-
-    success = trigger_github_action(url, quality, chat_id)
-    if not success:
-        await context.bot.send_message(
-            chat_id,
-            "❌ _Не удалось запустить задачу._\n\n"
-            "_Проверь настройки GITHUB_TOKEN и GITHUB_REPO._",
+        await query.edit_message_text(
+            "⏳ _Запускаю скачивание..._\n\n"
+            "📊 _Файл придёт через 1-2 минуты._",
             parse_mode='Markdown'
         )
+
+        success = trigger_github_action(url, quality, chat_id)
+        if not success:
+            await context.bot.send_message(
+                chat_id,
+                "❌ _Не удалось запустить задачу._\n\n"
+                "_Проверь настройки GITHUB_TOKEN и GITHUB_REPO._",
+                parse_mode='Markdown'
+            )
+    except Exception as e:
+        # Игнорируем ошибки при редактировании сообщений
+        pass
 
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -192,11 +199,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 input_message_content=InputTextMessageContent(
                     message_text=f'⏳ _Скачиваю видео в 720p..._\n\n🔗 `{url[:60]}...`',
                     parse_mode='Markdown'
-                ),
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🎵 MP3", callback_data=f'inline_mp3_{url}'),
-                    InlineKeyboardButton("📺 480p", callback_data=f'inline_480_{url}')
-                ]])
+                )
             )
         ]
     
@@ -214,51 +217,20 @@ async def chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYP
     if not chat_id:
         return
     
+    # Отправляем сообщение о начале скачивания
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"⏳ _Запускаю скачивание в 720p..._\n\n📊 _Файл придёт через 1-2 минуты._\n\n🔗 `{url[:60]}...`",
+        parse_mode='Markdown'
+    )
+    
     # Запускаем workflow на скачивание 720p
     success = trigger_github_action(url, '720', chat_id)
     
     if not success:
-        # Пробуем отправить сообщение об ошибке через бота
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="❌ _Не удалось запустить задачу. Проверь настройки._",
-                parse_mode='Markdown'
-            )
-        except:
-            pass
-
-
-async def inline_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кнопок из inline-режима (MP3, 480p и т.д.)."""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.message is None:
-        return
-    
-    data = query.data
-    if not data.startswith('inline_'):
-        return
-    
-    parts = data.split('_', 2)
-    if len(parts) < 3:
-        return
-    
-    quality = parts[1]
-    url = parts[2]
-    chat_id = query.message.chat_id
-    
-    await query.edit_message_text(
-        f"⏳ _Запускаю скачивание в {quality}..._\n\n📊 _Файл придёт через 1-2 минуты._\n\n🔗 `{url[:50]}...`",
-        parse_mode='Markdown'
-    )
-    
-    success = trigger_github_action(url, quality, chat_id)
-    if not success:
         await context.bot.send_message(
-            chat_id,
-            "❌ _Не удалось запустить задачу._",
+            chat_id=chat_id,
+            text="❌ _Не удалось запустить задачу. Проверь настройки._",
             parse_mode='Markdown'
         )
 
@@ -272,5 +244,4 @@ if __name__ == '__main__':
     app.add_handler(ChosenInlineResultHandler(chosen_inline_result))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(CallbackQueryHandler(inline_button_callback, pattern='^inline_'))
     app.run_polling()
