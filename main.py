@@ -51,21 +51,21 @@ def trigger_github_action(url: str, quality: str, chat_id: str) -> bool:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Пришли ссылку на видео (YouTube, Instagram, TikTok, Twitter, Vimeo, SoundCloud, Facebook).")
+    await update.message.reply_text("👋 *Привет!* Отправь мне ссылку на видео\n\n📺 _Поддерживаемые сайты:_ YouTube, Instagram, TikTok, Twitter, Vimeo, SoundCloud, Facebook", parse_mode='Markdown')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
     if not any(domain in url for domain in SUPPORTED_DOMAINS):
-        await update.message.reply_text("❌ Сайт не поддерживается.")
+        await update.message.reply_text("❌ _Сайт не поддерживается._", parse_mode='Markdown')
         return
     context.user_data['current_url'] = url
     keyboard = [
-        [InlineKeyboardButton("1080p", callback_data='1080'),
-         InlineKeyboardButton("720p", callback_data='720'),
-         InlineKeyboardButton("480p", callback_data='480')],
-        [InlineKeyboardButton("MP3", callback_data='mp3')]
+        [InlineKeyboardButton("🎬 1080p", callback_data='1080'),
+         InlineKeyboardButton("📺 720p", callback_data='720'),
+         InlineKeyboardButton("📱 480p", callback_data='480')],
+        [InlineKeyboardButton("🎵 MP3", callback_data='mp3')]
     ]
-    await update.message.reply_text("Выбери качество:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("🎛 *Выбери качество:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -77,19 +77,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Предупреждение для 1080p
     if quality == '1080':
         await query.edit_message_text(
-            "⚠️ Видео в 1080p могут быть больше 50 МБ и не отправятся в Telegram. Продолжить?",
+            "⚠️ _Видео в 1080p могут быть больше 50 МБ и не отправятся в Telegram. Продолжить?_",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Да", callback_data='1080_confirm')],
-                [InlineKeyboardButton("Нет", callback_data='cancel')]
-            ])
+                [InlineKeyboardButton("✅ Да", callback_data='1080_confirm')],
+                [InlineKeyboardButton("❌ Нет", callback_data='cancel')]
+            ]),
+            parse_mode='Markdown'
         )
         return
 
-    await query.edit_message_text("⏳ Запускаю скачивание... Файл придёт через 1-2 минуты.")
+    await query.edit_message_text("⏳ _Запускаю скачивание... Файл придёт через 1-2 минуты._", parse_mode='Markdown')
 
     success = trigger_github_action(url, quality, chat_id)
     if not success:
-        await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу. Проверь настройки GITHUB_TOKEN и GITHUB_REPO.")
+        await context.bot.send_message(chat_id, "❌ _Не удалось запустить задачу. Проверь настройки GITHUB_TOKEN и GITHUB_REPO._", parse_mode='Markdown')
 
 async def button_callback_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -99,19 +100,20 @@ async def button_callback_confirm(update: Update, context: ContextTypes.DEFAULT_
     quality = query.data
 
     if quality == '1080_confirm':
-        await query.edit_message_text("⏳ Запускаю скачивание в 1080p... Файл придёт через 1-2 минуты.")
+        await query.edit_message_text("⏳ _Запускаю скачивание в 1080p... Файл придёт через 1-2 минуты._", parse_mode='Markdown')
+        # Преобразуем 1080_confirm -> 1080 перед отправкой
         success = trigger_github_action(url, '1080', chat_id)
         if not success:
-            await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу. Проверь настройки GITHUB_TOKEN и GITHUB_REPO.")
+            await context.bot.send_message(chat_id, "❌ _Не удалось запустить задачу. Проверь настройки GITHUB_TOKEN и GITHUB_REPO._", parse_mode='Markdown')
     elif quality == 'cancel':
-        await query.edit_message_text("❌ Отменено.")
+        await query.edit_message_text("❌ _Отменено._", parse_mode='Markdown')
         keyboard = [
-            [InlineKeyboardButton("1080p", callback_data='1080'),
-             InlineKeyboardButton("720p", callback_data='720'),
-             InlineKeyboardButton("480p", callback_data='480')],
-            [InlineKeyboardButton("MP3", callback_data='mp3')]
+            [InlineKeyboardButton("🎬 1080p", callback_data='1080'),
+             InlineKeyboardButton("📺 720p", callback_data='720'),
+             InlineKeyboardButton("📱 480p", callback_data='480')],
+            [InlineKeyboardButton("🎵 MP3", callback_data='mp3')]
         ]
-        await context.bot.send_message(chat_id, "Выбери качество:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await context.bot.send_message(chat_id, "🎛 _Выбери качество:_", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 
 if __name__ == '__main__':
