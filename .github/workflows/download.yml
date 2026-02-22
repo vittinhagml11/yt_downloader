@@ -15,6 +15,10 @@ on:
       bot_token:
         description: 'Telegram bot token'
         required: true
+      message_id:
+        description: 'Reply to message_id (optional)'
+        required: false
+        default: ''
 
 jobs:
   download:
@@ -35,31 +39,25 @@ jobs:
       - name: Write cookies
         run: echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
 
-      - name: Download video and thumbnail
+      - name: Download
         id: download
         run: |
           mkdir downloads
 
           if echo "${{ github.event.inputs.url }}" | grep -qE "youtube\.com|youtu\.be"; then
             IS_YOUTUBE="true"
-          else
-            IS_YOUTUBE="false"
-          fi
-
-          if [ "$IS_YOUTUBE" = "true" ]; then
             EXTRACTOR_ARGS="--extractor-args youtube:player_client=web"
             YT_ARGS="--js-runtimes node --remote-components ejs:github"
           else
+            IS_YOUTUBE="false"
             EXTRACTOR_ARGS=""
             YT_ARGS=""
           fi
 
-          # Скачиваем превью
+          # Превью
           yt-dlp \
-            --cookies cookies.txt \
-            $EXTRACTOR_ARGS \
-            --write-thumbnail \
-            --convert-thumbnails jpg \
+            --cookies cookies.txt $EXTRACTOR_ARGS \
+            --write-thumbnail --convert-thumbnails jpg \
             --skip-download \
             --output "downloads/%(id)s.%(ext)s" \
             --no-playlist \
@@ -67,56 +65,39 @@ jobs:
 
           # Метаданные
           yt-dlp \
-            --cookies cookies.txt \
-            $EXTRACTOR_ARGS \
-            --dump-json \
-            --no-playlist \
+            --cookies cookies.txt $EXTRACTOR_ARGS \
+            --dump-json --no-playlist \
             "${{ github.event.inputs.url }}" > downloads/metadata.json || echo "{}" > downloads/metadata.json
 
-          # Скачиваем видео/аудио
+          # Скачивание
           Q="${{ github.event.inputs.quality }}"
 
           if [ "$Q" = "mp3" ]; then
-            yt-dlp \
-              --cookies cookies.txt \
-              $YT_ARGS \
-              $EXTRACTOR_ARGS \
+            yt-dlp --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
               --format "bestaudio/best" \
               --extract-audio --audio-format mp3 \
               --output "downloads/%(id)s.%(ext)s" \
-              --no-playlist \
-              "${{ github.event.inputs.url }}"
+              --no-playlist "${{ github.event.inputs.url }}"
 
           elif [ "$Q" = "1080" ] && [ "$IS_YOUTUBE" = "true" ]; then
-            yt-dlp \
-              --cookies cookies.txt \
-              $YT_ARGS \
-              $EXTRACTOR_ARGS \
+            yt-dlp --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
               --format "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio" \
               --merge-output-format mp4 \
               --output "downloads/%(id)s.%(ext)s" \
-              --no-playlist \
-              "${{ github.event.inputs.url }}"
+              --no-playlist "${{ github.event.inputs.url }}"
 
           else
-            yt-dlp \
-              --cookies cookies.txt \
-              $YT_ARGS \
-              $EXTRACTOR_ARGS \
+            yt-dlp --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
               --format "best[height<=${Q}]/best" \
               --output "downloads/%(id)s.%(ext)s" \
-              --no-playlist \
-              "${{ github.event.inputs.url }}"
+              --no-playlist "${{ github.event.inputs.url }}"
           fi
 
-          # Находим файлы
           VIDEO_FILE=$(ls downloads/ | grep -vE "\.jpg$|metadata\.json" | head -1)
           THUMB_FILE=$(ls downloads/*.jpg 2>/dev/null | head -1 || echo "")
-
-          # Читаем метаданные
-          TITLE=$(python3 -c "import sys,json; d=json.load(open('downloads/metadata.json')); print(d.get('title','Unknown')[:100])" 2>/dev/null || echo "Unknown")
-          DURATION=$(python3 -c "import sys,json; d=json.load(open('downloads/metadata.json')); t=d.get('duration',0); print(f'{int(t)//60}:{int(t)%60:02d}' if t else 'N/A')" 2>/dev/null || echo "N/A")
-          UPLOADER=$(python3 -c "import sys,json; d=json.load(open('downloads/metadata.json')); print(d.get('uploader','Unknown'))" 2>/dev/null || echo "Unknown")
+          TITLE=$(python3 -c "import json; d=json.load(open('downloads/metadata.json')); print(d.get('title','Unknown')[:100])" 2>/dev/null || echo "Unknown")
+          DURATION=$(python3 -c "import json; d=json.load(open('downloads/metadata.json')); t=d.get('duration',0); print(f'{int(t)//60}:{int(t)%60:02d}' if t else 'N/A')" 2>/dev/null || echo "N/A")
+          UPLOADER=$(python3 -c "import json; d=json.load(open('downloads/metadata.json')); print(d.get('uploader','Unknown'))" 2>/dev/null || echo "Unknown")
           SIZE=$(du -m "downloads/$VIDEO_FILE" | cut -f1)
 
           echo "filename=downloads/$VIDEO_FILE" >> $GITHUB_OUTPUT
@@ -137,15 +118,24 @@ jobs:
           CHAT_ID="${{ github.event.inputs.chat_id }}"
           TOKEN="${{ github.event.inputs.bot_token }}"
           QUALITY="${{ github.event.inputs.quality }}"
+          MESSAGE_ID="${{ github.event.inputs.message_id }}"
+
+          # Если есть message_id — отвечаем reply в беседу
+          if [ -n "$MESSAGE_ID" ]; then
+            REPLY_ARG="-F reply_to_message_id=$MESSAGE_ID"
+          else
+            REPLY_ARG=""
+          fi
 
           if [ "$SIZE" -gt 50 ]; then
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
               -d chat_id="$CHAT_ID" \
-              -d text="⚠️ Файл слишком большой (${SIZE} МБ). Telegram принимает максимум 50 МБ."
+              -d text="⚠️ Файл слишком большой (${SIZE} МБ). Telegram принимает максимум 50 МБ." \
+              ${MESSAGE_ID:+-d reply_to_message_id="$MESSAGE_ID"}
             exit 0
           fi
 
-          # Отправляем превью
+          # Превью
           if [ -n "$THUMB" ] && [ -f "$THUMB" ]; then
             if [ "$QUALITY" = "mp3" ]; then
               CAPTION="🎵 ${TITLE} | 👤 ${UPLOADER} | ⏱ ${DURATION} | 🎧 MP3 • ${SIZE} МБ"
@@ -155,28 +145,32 @@ jobs:
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendPhoto" \
               -F chat_id="$CHAT_ID" \
               -F photo=@"$THUMB" \
-              -F caption="$CAPTION"
+              -F caption="$CAPTION" \
+              $REPLY_ARG
           fi
 
-          # Отправляем файл
+          # Файл — тоже reply в беседу
           if [ "$QUALITY" = "mp3" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" \
               -F chat_id="$CHAT_ID" \
               -F audio=@"$FILE" \
               -F title="$TITLE" \
-              -F performer="$UPLOADER"
+              -F performer="$UPLOADER" \
+              $REPLY_ARG
           else
             if [ -n "$THUMB" ] && [ -f "$THUMB" ]; then
               curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
                 -F chat_id="$CHAT_ID" \
                 -F video=@"$FILE" \
                 -F supports_streaming=true \
-                -F thumb=@"$THUMB"
+                -F thumb=@"$THUMB" \
+                $REPLY_ARG
             else
               curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
                 -F chat_id="$CHAT_ID" \
                 -F video=@"$FILE" \
-                -F supports_streaming=true
+                -F supports_streaming=true \
+                $REPLY_ARG
             fi
           fi
 

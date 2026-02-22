@@ -7,7 +7,6 @@ from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters, ContextTypes
 
-# Логирование — видно в Render logs
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -15,8 +14,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 flask_app = Flask(__name__)
-
-# Кэш URL: хэш → полный URL
 url_cache = {}
 
 @flask_app.route('/')
@@ -33,12 +30,9 @@ GH_REPO  = os.getenv('GITHUB_REPO')
 
 SUPPORTED_DOMAINS = [
     "youtube.com", "youtu.be",
-    "instagram.com",
-    "tiktok.com",
+    "instagram.com", "tiktok.com",
     "twitter.com", "x.com",
-    "soundcloud.com",
-    "vimeo.com",
-    "facebook.com",
+    "soundcloud.com", "vimeo.com", "facebook.com",
 ]
 
 def is_youtube(url: str) -> bool:
@@ -47,7 +41,8 @@ def is_youtube(url: str) -> bool:
 def get_url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:8]
 
-def trigger_github_action(url: str, quality: str, chat_id: str) -> bool:
+def trigger_github_action(url: str, quality: str, chat_id: str, reply_to_message_id=None) -> bool:
+    """Запускает workflow. reply_to_message_id — ID сообщения в беседе для ответа."""
     try:
         api_url = f"https://api.github.com/repos/{GH_REPO}/actions/workflows/download.yml/dispatches"
         headers = {
@@ -58,14 +53,15 @@ def trigger_github_action(url: str, quality: str, chat_id: str) -> bool:
         payload = {
             "ref": "main",
             "inputs": {
-                "url":       url,
-                "quality":   quality,
-                "chat_id":   str(chat_id),
-                "bot_token": TOKEN,
+                "url":        url,
+                "quality":    quality,
+                "chat_id":    str(chat_id),
+                "bot_token":  TOKEN,
+                "message_id": str(reply_to_message_id) if reply_to_message_id else "",
             }
         }
         resp = requests.post(api_url, json=payload, headers=headers, timeout=10)
-        logger.info(f"GitHub Action triggered: status={resp.status_code}, chat_id={chat_id}, quality={quality}")
+        logger.info(f"GitHub Action: status={resp.status_code}, chat={chat_id}, quality={quality}, reply_to={reply_to_message_id}")
         return resp.status_code == 204
     except Exception as e:
         logger.error(f"Error triggering GitHub action: {e}")
@@ -77,42 +73,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *Привет!* Я YouTube-Downloader Bot\n\n"
         "📺 *Поддерживаемые сайты:*\n"
         "• YouTube\n• Instagram\n• TikTok\n• Twitter/X\n• Vimeo\n• SoundCloud\n• Facebook\n\n"
-        "🎛 *Команды:*\n"
         "/help — подробная справка\n\n"
-        "_Отправь мне ссылку на видео, чтобы начать!_\n\n"
-        "💬 _Используй @ в любом чате, чтобы скачать видео!_",
+        "_Отправь ссылку на видео или используй @ в любом чате!_",
         parse_mode='Markdown'
     )
-
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📖 *Справка по боту*\n\n"
-        "🎬 *Как скачать видео:*\n"
-        "1. Отправь ссылку в ЛС боту или используй @ в чате\n"
-        "2. Нажми кнопку для скачивания\n"
-        "3. Дождись файл в Telegram\n\n"
-        "⚠️ *Важно:*\n"
-        "• Telegram ограничивает размер файла 50 МБ\n"
-        "• 1080p доступно только для YouTube\n\n"
-        "📋 *Команды:*\n"
-        "/start — главное меню\n"
-        "/help — эта справка",
+        "📖 *Справка*\n\n"
+        "1. Отправь ссылку боту в ЛС или @бот в чате\n"
+        "2. Выбери качество\n"
+        "3. Получи файл\n\n"
+        "⚠️ Лимит Telegram — 50 МБ\n"
+        "1080p только для YouTube",
         parse_mode='Markdown'
     )
 
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
-
     if not any(domain in url for domain in SUPPORTED_DOMAINS):
-        await update.message.reply_text("❌ _Сайт не поддерживается._", parse_mode='Markdown')
+        await update.message.reply_text("❌ Сайт не поддерживается.")
         return
 
     context.user_data['current_url'] = url
-    youtube = is_youtube(url)
 
-    if youtube:
+    if is_youtube(url):
         keyboard = [
             [InlineKeyboardButton("🎬 1080p", callback_data='y_1080'),
              InlineKeyboardButton("📺 720p",  callback_data='y_720'),
@@ -132,39 +117,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кнопки в ЛС бота (y_ и o_)."""
+    """Кнопки в ЛС (y_ и o_) — reply_to_message_id не нужен."""
     try:
         query = update.callback_query
         await query.answer()
-
         url = context.user_data.get('current_url')
         if not url:
-            await query.edit_message_text("❌ _Ссылка не найдена. Отправьте ссылку ещё раз._", parse_mode='Markdown')
+            await query.edit_message_text("❌ Ссылка не найдена. Отправь ещё раз.")
             return
-
-        q = query.data[2:]  # убираем y_ или o_
+        q = query.data[2:]
         chat_id = query.message.chat_id
-
-        await query.edit_message_text(
-            "⏳ _Запускаю скачивание..._\n📊 _Файл придёт через 1-2 минуты._",
-            parse_mode='Markdown'
-        )
-
+        await query.edit_message_text("⏳ Запускаю скачивание...\nФайл придёт через 1-2 минуты.")
         success = trigger_github_action(url, q, chat_id)
         if not success:
-            await context.bot.send_message(chat_id, "❌ _Не удалось запустить задачу._", parse_mode='Markdown')
+            await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу.")
     except Exception as e:
-        logger.error(f"Error in button_callback: {e}")
-
+        logger.error(f"button_callback error: {e}", exc_info=True)
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inline-запросы (@bot ссылка)."""
+    """Inline-запросы (@bot ссылка в чате)."""
     try:
         query_text = update.inline_query.query
-        logger.info(f"Inline query received: '{query_text}'")
-
+        logger.info(f"Inline query: '{query_text}'")
         if not query_text:
             return
 
@@ -175,111 +150,91 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
 
         if not url:
-            results = [
-                InlineQueryResultArticle(
-                    id='help',
-                    title='🔍 Введите ссылку на видео',
-                    description='YouTube, TikTok, Instagram, Twitter, Vimeo, SoundCloud',
-                    input_message_content=InputTextMessageContent(
-                        message_text='Отправь ссылку боту в ЛС или напиши @bot https://youtube.com/...',
-                    )
+            results = [InlineQueryResultArticle(
+                id='help',
+                title='🔍 Введите ссылку на видео',
+                description='YouTube, TikTok, Instagram, Twitter, Vimeo, SoundCloud',
+                input_message_content=InputTextMessageContent(
+                    message_text='Напиши @bot https://youtube.com/...'
                 )
-            ]
+            )]
             await update.inline_query.answer(results, cache_time=0)
             return
 
-        youtube = is_youtube(url)
         url_hash = get_url_hash(url)
         url_cache[url_hash] = url
-        logger.info(f"Cached URL: hash={url_hash}, url={url[:50]}")
-
-        # Формируем callback_data с URL прямо внутри — не зависим от кэша
-        # Telegram ограничивает callback_data до 64 байт, поэтому кодируем качество + хэш
-        # URL передаём через хэш, но также дублируем в bot_data (context.application)
         context.application.bot_data[url_hash] = url
 
         youtube = is_youtube(url)
         quality = '1080' if youtube else '720'
-        label = '1080p' if youtube else '720p'
+        label   = '1080p' if youtube else '720p'
         short_url = url[:50] + '...' if len(url) > 50 else url
 
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                f"📥 Скачать {label}",
-                callback_data=f'd_{url_hash}_{quality}'
-            )
+            InlineKeyboardButton(f"📥 Скачать {label}", callback_data=f'd_{url_hash}_{quality}')
         ]])
 
-        results = [
-            InlineQueryResultArticle(
-                id=url_hash,
-                title=f'📥 Скачать видео ({label})',
-                description=short_url,
-                input_message_content=InputTextMessageContent(
-                    message_text=f"🎬 Видео для скачивания:\n{url}\n\nНажми кнопку ниже 👇",
-                ),
-                reply_markup=keyboard
-            )
-        ]
+        results = [InlineQueryResultArticle(
+            id=url_hash,
+            title=f'📥 Скачать видео ({label})',
+            description=short_url,
+            input_message_content=InputTextMessageContent(
+                message_text=f"🎬 Видео: {url}\n\nНажми кнопку ниже 👇"
+            ),
+            reply_markup=keyboard
+        )]
 
         await update.inline_query.answer(results, cache_time=0)
-        logger.info(f"Inline results sent for url_hash={url_hash}")
+        logger.info(f"Inline result sent: hash={url_hash}")
 
     except Exception as e:
-        logger.error(f"Error in inline_query: {e}", exc_info=True)
-
+        logger.error(f"inline_query error: {e}", exc_info=True)
 
 async def inline_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кнопка скачивания из inline-сообщения (d_)."""
+    """Кнопка из inline-сообщения в беседе (d_). Отвечаем в ТУ ЖЕ беседу."""
     try:
         query = update.callback_query
-        logger.info(f"inline_download_callback triggered: data={query.data}")
-
+        logger.info(f"inline_download_callback: data={query.data}")
         await query.answer("⏳ Запускаю...", show_alert=False)
 
-        # Парсим d_{url_hash}_{quality}
-        parts = query.data.split('_')
-        # parts = ['d', url_hash, quality]
+        parts = query.data.split('_')  # ['d', hash, quality]
         if len(parts) < 3:
-            logger.error(f"Bad callback data format: {query.data}")
-            await query.edit_message_text("❌ Ошибка формата запроса.")
+            await query.edit_message_text("❌ Ошибка формата.")
             return
 
         url_hash = parts[1]
         quality  = parts[2]
-        logger.info(f"Parsed: url_hash={url_hash}, quality={quality}")
 
-        # Ищем URL — сначала в bot_data (надёжнее), потом в url_cache
         url = context.application.bot_data.get(url_hash) or url_cache.get(url_hash)
-        logger.info(f"URL from cache: {url}")
-
         if not url:
             logger.warning(f"URL not found for hash={url_hash}")
             await query.edit_message_text(
-                "⚠️ Ссылка устарела — бот перезапускался. Отправь ссылку боту в ЛС заново."
+                "⚠️ Ссылка устарела (бот перезапускался).\n"
+                "Отправь ссылку боту в ЛС, нажми кнопку — файл придёт сюда в беседу."
             )
             return
 
-        # В inline-режиме query.message — это сообщение в чужом чате
-        # chat_id берём оттуда, если доступно
+        # chat_id беседы где нажали кнопку
         if query.message:
-            chat_id = query.message.chat_id
-            logger.info(f"chat_id from message: {chat_id}")
+            chat_id    = query.message.chat_id
+            message_id = query.message.message_id  # ID сообщения в беседе — для reply
         else:
-            # Если message недоступен — используем from_user (личка пользователя)
-            chat_id = query.from_user.id
-            logger.info(f"chat_id from from_user: {chat_id}")
+            chat_id    = query.from_user.id
+            message_id = None
+
+        logger.info(f"Sending to chat_id={chat_id}, reply_to={message_id}")
 
         await query.edit_message_text(
-            f"⏳ Запускаю скачивание {quality}...\nФайл придёт через 1-2 минуты.\n\n🔗 {url[:60]}"
+            f"⏳ Скачиваю {quality}...\nФайл придёт сюда через 1-2 минуты."
         )
 
-        success = trigger_github_action(url, quality, chat_id)
+        # Передаём message_id — workflow ответит reply на это сообщение в беседе
+        success = trigger_github_action(url, quality, chat_id, message_id)
         if not success:
-            await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу. Попробуй ещё раз.")
+            await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу.")
 
     except Exception as e:
-        logger.error(f"Error in inline_download_callback: {e}", exc_info=True)
+        logger.error(f"inline_download_callback error: {e}", exc_info=True)
         try:
             await query.edit_message_text(f"❌ Ошибка: {e}")
         except:
@@ -288,15 +243,11 @@ async def inline_download_callback(update: Update, context: ContextTypes.DEFAULT
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
-
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(InlineQueryHandler(inline_query))
-
-    # ВАЖНО: d_ должен быть ПЕРВЫМ — иначе button_callback перехватит
     app.add_handler(CallbackQueryHandler(inline_download_callback, pattern='^d_'))
     app.add_handler(CallbackQueryHandler(button_callback, pattern='^[yo]_'))
-
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
