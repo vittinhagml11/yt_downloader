@@ -66,17 +66,14 @@ def trigger_github_action(url: str, quality: str, chat_id: str, reply_to_message
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Привет!* Я YouTube-Downloader Bot\n\n"
-        "В ЛС: просто отправь мне ссылку.\n"
-        "В беседах: напиши моё @имя и ссылку обычным сообщением.\n"
-        "(Например: `@твой_бот https://youtube.com/...`)",
+        "Отправь мне ссылку или используй `@имя_бота ссылка`",
         parse_mode='Markdown'
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Вот тут магия!
-    В ЛС — бот реагирует на любые ссылки.
-    В БЕСЕДЕ — бот молчит, ПОКА его не упомянут через @.
+    Обработка обычных сообщений.
+    В группе бот реагирует ТОЛЬКО если есть упоминание @бота.
     """
     text = update.message.text
     if not text:
@@ -85,13 +82,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = update.message.chat.type
     bot_username = f"@{context.bot.username}"
 
-    # Если мы в беседе, ищем упоминание бота
+    # Если это группа, игнорируем всё, где нет юзернейма бота
     if chat_type in ['group', 'supergroup']:
-        # Если бота не упомянули — просто игнорируем сообщение (бот не будет спамить!)
         if bot_username not in text:
             return 
 
-    # Ищем ссылку
     url = None
     for word in text.split():
         if any(domain in word for domain in SUPPORTED_DOMAINS) and "http" in word:
@@ -99,25 +94,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
 
     if not url:
-        if chat_type == 'private':
-            await update.message.reply_text("❌ Сайт не поддерживается.")
-        else:
-            await update.message.reply_text(f"❌ {update.message.from_user.first_name}, вы упомянули меня, но я не нашел поддерживаемую ссылку.")
         return
 
-    # Сохраняем кэш
     url_hash = get_url_hash(url)
     url_cache[url_hash] = url
     context.application.bot_data[url_hash] = url
 
-    # Кнопки качества (Inline Keyboard)
     keyboard = [
         [InlineKeyboardButton("📺 720p",  callback_data=f'd_{url_hash}_720'),
          InlineKeyboardButton("📱 480p",  callback_data=f'd_{url_hash}_480')],
         [InlineKeyboardButton("🎵 MP3", callback_data=f'd_{url_hash}_mp3')]
     ]
 
-    # Отправляем в чат!
     await update.message.reply_text(
         "🎛 *Выбери качество:*",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -125,8 +113,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=update.message.message_id
     )
 
+# Я ВЕРНУЛ ЭТУ ФУНКЦИЮ: Она отвечает за всплывающее окошко при вводе @бота
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Inline-запросы (@bot ссылка и ожидание всплывающего окна)."""
+    try:
+        query_text = update.inline_query.query
+        if not query_text:
+            return
+
+        url = None
+        for word in query_text.split():
+            if any(domain in word for domain in SUPPORTED_DOMAINS):
+                url = word
+                break
+
+        if not url:
+            results = [InlineQueryResultArticle(
+                id='help',
+                title='🔍 Введите ссылку на видео',
+                description='YouTube, TikTok, Instagram, Twitter, Vimeo, SoundCloud',
+                input_message_content=InputTextMessageContent(message_text='Напиши @bot https://youtube.com/...')
+            )]
+            await update.inline_query.answer(results, cache_time=0)
+            return
+
+        url_hash = get_url_hash(url)
+        url_cache[url_hash] = url
+        context.application.bot_data[url_hash] = url
+
+        label   = '720p'
+        short_url = url[:50] + '...' if len(url) > 50 else url
+
+        # Кнопка под inline сообщением
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"📥 Скачать {label}", callback_data=f'd_{url_hash}_720')
+        ]])
+
+        results = [InlineQueryResultArticle(
+            id=url_hash,
+            title=f'📥 Скачать видео ({label})',
+            description=short_url,
+            input_message_content=InputTextMessageContent(message_text=url),
+            reply_markup=keyboard
+        )]
+
+        await update.inline_query.answer(results, cache_time=0)
+
+    except Exception as e:
+        logger.error(f"inline_query error: {e}", exc_info=True)
+
 async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатия на кнопки под сообщением"""
+    """Единый обработчик для всех кнопок."""
     try:
         query = update.callback_query
         await query.answer("⏳ Запускаю...", show_alert=False)
@@ -142,17 +179,22 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ Ссылка устарела. Отправь её заново.")
             return
 
-        # Поскольку кнопки прикреплены к обычному сообщению, query.message ВСЕГДА существует!
+        # Если кнопка была под ОБЫЧНЫМ сообщением (в ЛС или группе)
         if query.message:
             chat_id = query.message.chat_id
             message_id = query.message.message_id
+            await query.edit_message_text(f"⏳ Скачиваю {quality}...\nФайл придёт сюда через 1-2 минуты.")
             
-            await query.edit_message_text(f"⏳ Скачиваю {quality}...\nВидео придёт прямо сюда через 1-2 минуты.")
-            
-            # Запускаем GitHub Action, передав ID беседы!
-            success = trigger_github_action(url, quality, chat_id, message_id)
-            if not success:
-                await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу на GitHub.")
+        # Если кнопка была под INLINE (всплывающим) сообщением
+        else:
+            chat_id = query.from_user.id # Telegram скрывает ID группы, отправляем в ЛС
+            message_id = None
+            await query.edit_message_text(f"⏳ Запускаю скачивание {quality}...\nВнимание: Файл придёт тебе в ЛС.")
+
+        # Запускаем GitHub Action
+        success = trigger_github_action(url, quality, chat_id, message_id)
+        if not success:
+            await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу.")
 
     except Exception as e:
         logger.error(f"download_callback error: {e}", exc_info=True)
@@ -164,10 +206,10 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     
-    # Обработчик кнопок
-    app.add_handler(CallbackQueryHandler(download_callback, pattern='^d_'))
+    # ВОТ ОНО - возвращаем обработчик всплывающего окна
+    app.add_handler(InlineQueryHandler(inline_query))
     
-    # Единый обработчик текста (он сам разберется, беседа это или ЛС)
+    app.add_handler(CallbackQueryHandler(download_callback, pattern='^d_'))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     app.run_polling()
