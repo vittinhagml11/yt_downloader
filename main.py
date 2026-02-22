@@ -1,28 +1,86 @@
 import os
 import re
 import json
+import sqlite3
 import threading
 import requests
-from flask import Flask
+from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 flask_app = Flask(__name__)
 
+# Инициализация SQLite
+DB_PATH = 'history.db'
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL,
+            url TEXT NOT NULL,
+            title TEXT NOT NULL,
+            quality TEXT NOT NULL,
+            duration TEXT,
+            uploader TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_to_history(chat_id, url, title, quality, duration, uploader):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO history (chat_id, url, title, quality, duration, uploader)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (chat_id, url, title, quality, duration, uploader))
+    conn.commit()
+    conn.close()
+
+def get_history(chat_id, limit=10):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT title, quality, duration, url FROM history 
+        WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?
+    ''', (chat_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
 @flask_app.route('/')
 def home():
     return "I'm alive!"
 
+@flask_app.route('/webhook', methods=['POST'])
+def webhook():
+    """Получает метаданные от GitHub Actions для сохранения в историю."""
+    data = request.json
+    chat_id = data.get('chat_id')
+    url = data.get('url')
+    title = data.get('title', 'Unknown')
+    quality = data.get('quality')
+    duration = data.get('duration', 'N/A')
+    uploader = data.get('uploader', 'Unknown')
+    
+    if chat_id and url and quality:
+        save_to_history(chat_id, url, title, quality, duration, uploader)
+    
+    return jsonify({'status': 'ok'}), 200
+
 def run_flask():
+    init_db()
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port)
 
 TOKEN       = os.getenv('BOT_TOKEN')
 GH_TOKEN    = os.getenv('GITHUB_TOKEN')
 GH_REPO     = os.getenv('GITHUB_REPO')
-
-# История загрузок (хранится в памяти, можно заменить на SQLite)
-download_history = {}
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # URL вашего бота для webhook
 
 SUPPORTED_DOMAINS = [
     "youtube.com", "youtu.be",
@@ -49,6 +107,7 @@ def trigger_github_action(url: str, quality: str, chat_id: str) -> bool:
             "quality":   quality,
             "chat_id":   str(chat_id),
             "bot_token": TOKEN,
+            "webhook_url": WEBHOOK_URL or "",
         }
     }
     resp = requests.post(api_url, json=payload, headers=headers, timeout=10)
@@ -193,7 +252,7 @@ async def button_callback_confirm(update: Update, context: ContextTypes.DEFAULT_
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    history = download_history.get(chat_id, [])
+    history = get_history(chat_id)
     
     if not history:
         await update.message.reply_text(
@@ -203,13 +262,17 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Показываем последние 10 записей
-    recent = history[-10:][::-1]
     text = "📋 *История загрузок:*\n\n"
-    for i, item in enumerate(recent, 1):
-        text += f"{i}. {item['title'][:40]}... — {item['quality']}\n"
+    for i, (title, quality, duration, url) in enumerate(history, 1):
+        # Обрезаем заголовок если слишком длинный
+        short_title = title[:35] + "..." if len(title) > 35 else title
+        text += f"{i}. {short_title}\n"
+        text += f"   📺 {quality}p | ⏱ {duration}\n"
+        text += f"   🔗 `{url[:50]}...`\n\n"
     
-    await update.message.reply_text(text, parse_mode='Markdown')
+    # Разбиваем на сообщения если слишком длинное
+    for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+        await update.message.reply_text(chunk, parse_mode='Markdown')
 
 
 if __name__ == '__main__':

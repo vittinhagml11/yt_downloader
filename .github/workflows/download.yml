@@ -15,6 +15,9 @@ on:
       bot_token:
         description: 'Telegram bot token'
         required: true
+      webhook_url:
+        description: 'Webhook URL for history'
+        required: false
 
 jobs:
   download:
@@ -131,6 +134,8 @@ jobs:
           CHAT_ID="${{ github.event.inputs.chat_id }}"
           TOKEN="${{ github.event.inputs.bot_token }}"
           QUALITY="${{ github.event.inputs.quality }}"
+          URL="${{ github.event.inputs.url }}"
+          WEBHOOK="${{ github.event.inputs.webhook_url }}"
 
           if [ "$SIZE" -gt 50 ]; then
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
@@ -168,6 +173,13 @@ jobs:
               -F video=@"$FILE" \
               -F supports_streaming=true \
               -F thumb=@"$THUMB"
+          fi
+
+          # Отправляем метаданные на webhook для сохранения в историю
+          if [ -n "$WEBHOOK" ]; then
+            curl -s -X POST "$WEBHOOK/webhook" \
+              -H "Content-Type: application/json" \
+              -d "{\"chat_id\":\"$CHAT_ID\",\"url\":\"$URL\",\"title\":\"$TITLE\",\"quality\":\"$QUALITY\",\"duration\":\"$DURATION\",\"uploader\":\"$UPLOADER\"}"
           fi
 
       - name: Notify on failure
