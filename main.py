@@ -180,6 +180,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             input_message_content=InputTextMessageContent(
                 message_text=url
             ),
+            reply_markup=keyboard
         )]
 
         await update.inline_query.answer(results, cache_time=0)
