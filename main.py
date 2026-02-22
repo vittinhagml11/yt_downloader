@@ -99,8 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_youtube(url):
         keyboard = [
-            [InlineKeyboardButton("🎬 1080p", callback_data='y_1080'),
-             InlineKeyboardButton("📺 720p",  callback_data='y_720'),
+            [InlineKeyboardButton("📺 720p",  callback_data='y_720'),
              InlineKeyboardButton("📱 480p",  callback_data='y_480')],
             [InlineKeyboardButton("🎵 MP3", callback_data='y_mp3')]
         ]
@@ -166,8 +165,8 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.application.bot_data[url_hash] = url
 
         youtube = is_youtube(url)
-        quality = '1080' if youtube else '720'
-        label   = '1080p' if youtube else '720p'
+        quality = '720'
+        label   = '720p'
         short_url = url[:50] + '...' if len(url) > 50 else url
 
         keyboard = InlineKeyboardMarkup([[
@@ -181,7 +180,6 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             input_message_content=InputTextMessageContent(
                 message_text=url
             ),
-            reply_markup=keyboard
         )]
 
         await update.inline_query.answer(results, cache_time=0)

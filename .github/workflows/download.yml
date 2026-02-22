@@ -44,7 +44,11 @@ jobs:
         run: |
           mkdir downloads
 
-          if echo "${{ github.event.inputs.url }}" | grep -qE "youtube\.com|youtu\.be"; then
+          # Извлекаем чистый URL — убираем всё лишнее (эмодзи, текст и т.д.)
+          CLEAN_URL=$(echo "${{ github.event.inputs.url }}" | grep -oE "https?://[^ ]+" | head -1)
+          echo "Clean URL: $CLEAN_URL"
+
+          if echo "$CLEAN_URL" | grep -qE "youtube\.com|youtu\.be"; then
             IS_YOUTUBE="true"
             EXTRACTOR_ARGS="--extractor-args youtube:player_client=web"
             YT_ARGS="--js-runtimes node --remote-components ejs:github"
@@ -61,13 +65,13 @@ jobs:
             --skip-download \
             --output "downloads/%(id)s.%(ext)s" \
             --no-playlist \
-            "${{ github.event.inputs.url }}" || true
+            "$CLEAN_URL" || true
 
           # Метаданные
           yt-dlp \
             --cookies cookies.txt $EXTRACTOR_ARGS \
             --dump-json --no-playlist \
-            "${{ github.event.inputs.url }}" > downloads/metadata.json || echo "{}" > downloads/metadata.json
+            "$CLEAN_URL" > downloads/metadata.json || echo "{}" > downloads/metadata.json
 
           # Скачивание
           Q="${{ github.event.inputs.quality }}"
@@ -77,20 +81,20 @@ jobs:
               --format "bestaudio/best" \
               --extract-audio --audio-format mp3 \
               --output "downloads/%(id)s.%(ext)s" \
-              --no-playlist "${{ github.event.inputs.url }}"
+              --no-playlist "$CLEAN_URL"
 
           elif [ "$Q" = "1080" ] && [ "$IS_YOUTUBE" = "true" ]; then
             yt-dlp --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
               --format "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio" \
               --merge-output-format mp4 \
               --output "downloads/%(id)s.%(ext)s" \
-              --no-playlist "${{ github.event.inputs.url }}"
+              --no-playlist "$CLEAN_URL"
 
           else
             yt-dlp --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
               --format "best[height<=${Q}]/best" \
               --output "downloads/%(id)s.%(ext)s" \
-              --no-playlist "${{ github.event.inputs.url }}"
+              --no-playlist "$CLEAN_URL"
           fi
 
           VIDEO_FILE=$(ls downloads/ | grep -vE "\.jpg$|metadata\.json" | head -1)
@@ -120,7 +124,6 @@ jobs:
           QUALITY="${{ github.event.inputs.quality }}"
           MESSAGE_ID="${{ github.event.inputs.message_id }}"
 
-          # Если есть message_id — отвечаем reply в беседу
           if [ -n "$MESSAGE_ID" ]; then
             REPLY_ARG="-F reply_to_message_id=$MESSAGE_ID"
           else
@@ -135,21 +138,7 @@ jobs:
             exit 0
           fi
 
-          # Превью
-          if [ -n "$THUMB" ] && [ -f "$THUMB" ]; then
-            if [ "$QUALITY" = "mp3" ]; then
-              CAPTION="🎵 ${TITLE} | 👤 ${UPLOADER} | ⏱ ${DURATION} | 🎧 MP3 • ${SIZE} МБ"
-            else
-              CAPTION="🎬 ${TITLE} | 👤 ${UPLOADER} | ⏱ ${DURATION} | 📺 ${QUALITY}p • ${SIZE} МБ"
-            fi
-            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendPhoto" \
-              -F chat_id="$CHAT_ID" \
-              -F photo=@"$THUMB" \
-              -F caption="$CAPTION" \
-              $REPLY_ARG
-          fi
 
-          # Файл — тоже reply в беседу
           if [ "$QUALITY" = "mp3" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" \
               -F chat_id="$CHAT_ID" \
