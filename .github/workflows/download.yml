@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'YouTube URL'
+        description: 'Video URL'
         required: true
       quality:
-        description: 'Quality (720, 480, mp3)'
+        description: 'Quality (1080, 720, 480, mp3)'
         required: true
       chat_id:
         description: 'Telegram chat_id'
@@ -40,12 +40,26 @@ jobs:
         run: |
           mkdir downloads
 
+          # Проверяем, YouTube ли это
+          if echo "${{ github.event.inputs.url }}" | grep -qE "youtube\.com|youtu\.be"; then
+            IS_YOUTUBE="true"
+          else
+            IS_YOUTUBE="false"
+          fi
+
+          # Для YouTube используем специальные аргументы
+          if [ "$IS_YOUTUBE" = "true" ]; then
+            EXTRACTOR_ARGS="--extractor-args youtube:player_client=web"
+          else
+            EXTRACTOR_ARGS=""
+          fi
+
           if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
             yt-dlp \
               --cookies cookies.txt \
               --js-runtimes "node" \
               --remote-components "ejs:github" \
-              --extractor-args "youtube:player_client=web" \
+              $EXTRACTOR_ARGS \
               --format "bestaudio/best" \
               --extract-audio --audio-format mp3 \
               --output "downloads/%(id)s.%(ext)s" \
@@ -53,12 +67,18 @@ jobs:
               "${{ github.event.inputs.url }}"
           else
             Q="${{ github.event.inputs.quality }}"
+            # Для 1080p используем склейку видео+аудио
+            if [ "$Q" = "1080" ]; then
+              FORMAT="bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio"
+            else
+              FORMAT="best[height<=${Q}]/best"
+            fi
             yt-dlp \
               --cookies cookies.txt \
               --js-runtimes "node" \
               --remote-components "ejs:github" \
-              --extractor-args "youtube:player_client=web" \
-              --format "best[height<=${Q}]/best" \
+              $EXTRACTOR_ARGS \
+              --format "$FORMAT" \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist \
               "${{ github.event.inputs.url }}"
@@ -79,7 +99,7 @@ jobs:
           if [ "$SIZE" -gt 50 ]; then
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
               -d chat_id="$CHAT_ID" \
-              -d text="❌ Файл слишком большой (${SIZE} МБ). Telegram принимает максимум 50 МБ."
+              -d text="⚠️ Файл слишком большой (${SIZE} МБ). Telegram принимает максимум 50 МБ."
             exit 0
           fi
 
