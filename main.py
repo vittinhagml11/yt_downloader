@@ -2,12 +2,21 @@ import os
 import threading
 import requests
 import hashlib
+import logging
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters, ContextTypes
 
+# Логирование — видно в Render logs
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
 flask_app = Flask(__name__)
 
+# Кэш URL: хэш → полный URL
 url_cache = {}
 
 @flask_app.route('/')
@@ -56,9 +65,10 @@ def trigger_github_action(url: str, quality: str, chat_id: str) -> bool:
             }
         }
         resp = requests.post(api_url, json=payload, headers=headers, timeout=10)
+        logger.info(f"GitHub Action triggered: status={resp.status_code}, chat_id={chat_id}, quality={quality}")
         return resp.status_code == 204
     except Exception as e:
-        print(f"Error triggering GitHub action: {e}")
+        logger.error(f"Error triggering GitHub action: {e}")
         return False
 
 
@@ -124,11 +134,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кнопок в ЛС бота (y_ и o_ префиксы)."""
+    """Кнопки в ЛС бота (y_ и o_)."""
     try:
         query = update.callback_query
-        if query is None:
-            return
         await query.answer()
 
         url = context.user_data.get('current_url')
@@ -136,8 +144,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ _Ссылка не найдена. Отправьте ссылку ещё раз._", parse_mode='Markdown')
             return
 
-        # Убираем префикс y_ или o_
-        q = query.data[2:]
+        q = query.data[2:]  # убираем y_ или o_
         chat_id = query.message.chat_id
 
         await query.edit_message_text(
@@ -149,18 +156,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not success:
             await context.bot.send_message(chat_id, "❌ _Не удалось запустить задачу._", parse_mode='Markdown')
     except Exception as e:
-        print(f"Error in button_callback: {e}")
+        logger.error(f"Error in button_callback: {e}")
 
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка inline-запросов (@bot в чате)."""
+    """Inline-запросы (@bot ссылка)."""
     try:
-        query = update.inline_query.query
-        if not query:
+        query_text = update.inline_query.query
+        logger.info(f"Inline query received: '{query_text}'")
+
+        if not query_text:
             return
 
         url = None
-        for word in query.split():
+        for word in query_text.split():
             if any(domain in word for domain in SUPPORTED_DOMAINS):
                 url = word
                 break
@@ -168,96 +177,124 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not url:
             results = [
                 InlineQueryResultArticle(
-                    id='1',
+                    id='help',
                     title='🔍 Введите ссылку на видео',
                     description='YouTube, TikTok, Instagram, Twitter, Vimeo, SoundCloud',
                     input_message_content=InputTextMessageContent(
-                        message_text='🔍 _Введите ссылку после @бота_\n\nПример: `@bot https://youtube.com/...`',
-                        parse_mode='Markdown'
+                        message_text='Отправь ссылку боту в ЛС или напиши @bot https://youtube.com/...',
                     )
                 )
             ]
-        else:
-            youtube = is_youtube(url)
-            quality = '1080' if youtube else '720'
-            label = '1080p' if youtube else '720p'
+            await update.inline_query.answer(results, cache_time=0)
+            return
 
-            url_hash = get_url_hash(url)
-            url_cache[url_hash] = url
+        youtube = is_youtube(url)
+        url_hash = get_url_hash(url)
+        url_cache[url_hash] = url
+        logger.info(f"Cached URL: hash={url_hash}, url={url[:50]}")
 
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton(f"📥 Скачать {label}", callback_data=f'd_{url_hash}_{quality}')
-            ]])
+        # Формируем callback_data с URL прямо внутри — не зависим от кэша
+        # Telegram ограничивает callback_data до 64 байт, поэтому кодируем качество + хэш
+        # URL передаём через хэш, но также дублируем в bot_data (context.application)
+        context.application.bot_data[url_hash] = url
 
-            short_url = url[:40] + '...' if len(url) > 40 else url
+        youtube = is_youtube(url)
+        quality = '1080' if youtube else '720'
+        label = '1080p' if youtube else '720p'
+        short_url = url[:50] + '...' if len(url) > 50 else url
 
-            results = [
-                InlineQueryResultArticle(
-                    id=url_hash,
-                    title=f'📥 Скачать видео ({label})',
-                    description='Нажми кнопку для скачивания',
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"🎬 _Видео для скачивания:_\n\n🔗 `{short_url}`\n\n_Нажми кнопку ниже 👇_",
-                        parse_mode='Markdown'
-                    ),
-                    reply_markup=keyboard
-                )
-            ]
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                f"📥 Скачать {label}",
+                callback_data=f'd_{url_hash}_{quality}'
+            )
+        ]])
+
+        results = [
+            InlineQueryResultArticle(
+                id=url_hash,
+                title=f'📥 Скачать видео ({label})',
+                description=short_url,
+                input_message_content=InputTextMessageContent(
+                    message_text=f"🎬 Видео для скачивания:\n{url}\n\nНажми кнопку ниже 👇",
+                ),
+                reply_markup=keyboard
+            )
+        ]
 
         await update.inline_query.answer(results, cache_time=0)
+        logger.info(f"Inline results sent for url_hash={url_hash}")
+
     except Exception as e:
-        print(f"Error in inline_query: {e}")
+        logger.error(f"Error in inline_query: {e}", exc_info=True)
 
 
 async def inline_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кнопки скачивания из inline-режима (префикс d_)."""
+    """Кнопка скачивания из inline-сообщения (d_)."""
     try:
         query = update.callback_query
-        if query is None:
-            return
+        logger.info(f"inline_download_callback triggered: data={query.data}")
 
         await query.answer("⏳ Запускаю...", show_alert=False)
 
-        data = query.data
-        # Парсим: d_{url_hash}_{quality}
-        parts = data[2:].split('_')   # убираем 'd_', делим остаток
-        if len(parts) < 2:
-            await query.edit_message_text("❌ _Ошибка формата запроса._", parse_mode='Markdown')
+        # Парсим d_{url_hash}_{quality}
+        parts = query.data.split('_')
+        # parts = ['d', url_hash, quality]
+        if len(parts) < 3:
+            logger.error(f"Bad callback data format: {query.data}")
+            await query.edit_message_text("❌ Ошибка формата запроса.")
             return
 
-        url_hash = parts[0]
-        quality  = parts[1]
+        url_hash = parts[1]
+        quality  = parts[2]
+        logger.info(f"Parsed: url_hash={url_hash}, quality={quality}")
 
-        url = url_cache.get(url_hash)
+        # Ищем URL — сначала в bot_data (надёжнее), потом в url_cache
+        url = context.application.bot_data.get(url_hash) or url_cache.get(url_hash)
+        logger.info(f"URL from cache: {url}")
+
         if not url:
+            logger.warning(f"URL not found for hash={url_hash}")
             await query.edit_message_text(
-                "⚠️ _Ссылка устарела. Попробуйте отправить запрос ещё раз._",
-                parse_mode='Markdown'
+                "⚠️ Ссылка устарела — бот перезапускался. Отправь ссылку боту в ЛС заново."
             )
             return
 
-        chat_id = query.message.chat_id
+        # В inline-режиме query.message — это сообщение в чужом чате
+        # chat_id берём оттуда, если доступно
+        if query.message:
+            chat_id = query.message.chat_id
+            logger.info(f"chat_id from message: {chat_id}")
+        else:
+            # Если message недоступен — используем from_user (личка пользователя)
+            chat_id = query.from_user.id
+            logger.info(f"chat_id from from_user: {chat_id}")
 
         await query.edit_message_text(
-            f"⏳ _Запускаю скачивание в {quality}..._\n📊 _Файл придёт через 1-2 минуты._\n\n🔗 `{url[:40]}...`",
-            parse_mode='Markdown'
+            f"⏳ Запускаю скачивание {quality}...\nФайл придёт через 1-2 минуты.\n\n🔗 {url[:60]}"
         )
 
         success = trigger_github_action(url, quality, chat_id)
         if not success:
-            await context.bot.send_message(chat_id, "❌ _Не удалось запустить задачу._", parse_mode='Markdown')
+            await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу. Попробуй ещё раз.")
+
     except Exception as e:
-        print(f"Error in inline_download_callback: {e}")
+        logger.error(f"Error in inline_download_callback: {e}", exc_info=True)
+        try:
+            await query.edit_message_text(f"❌ Ошибка: {e}")
+        except:
+            pass
 
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
+
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(InlineQueryHandler(inline_query))
 
-    # ВАЖНО: сначала конкретный паттерн d_, потом общий — иначе button_callback перехватит всё
+    # ВАЖНО: d_ должен быть ПЕРВЫМ — иначе button_callback перехватит
     app.add_handler(CallbackQueryHandler(inline_download_callback, pattern='^d_'))
     app.add_handler(CallbackQueryHandler(button_callback, pattern='^[yo]_'))
 
