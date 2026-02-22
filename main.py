@@ -179,7 +179,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title=f'📥 Скачать видео ({label})',
             description=short_url,
             input_message_content=InputTextMessageContent(
-                message_text=f"🎬 Видео: {url}\n\nНажми кнопку ниже 👇"
+                message_text=f"📥 {label}: {short_url}"
             ),
             reply_markup=keyboard
         )]
