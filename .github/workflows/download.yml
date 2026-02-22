@@ -85,8 +85,8 @@ jobs:
               "${{ github.event.inputs.url }}"
           else
             Q="${{ github.event.inputs.quality }}"
-            # Для 1080p используем склейку видео+аудио
-            if [ "$Q" = "1080" ]; then
+            # Для 1080p используем склейку видео+аудио (только для YouTube)
+            if [ "$Q" = "1080" ] && [ "$IS_YOUTUBE" = "true" ]; then
               FORMAT="bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio"
             else
               FORMAT="best[height<=${Q}]/best"
