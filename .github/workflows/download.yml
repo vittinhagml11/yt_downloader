@@ -40,87 +40,93 @@ jobs:
         run: |
           mkdir downloads
 
-          # Проверяем, YouTube ли это
           if echo "${{ github.event.inputs.url }}" | grep -qE "youtube\.com|youtu\.be"; then
             IS_YOUTUBE="true"
           else
             IS_YOUTUBE="false"
           fi
 
-          # Для YouTube используем специальные аргументы
           if [ "$IS_YOUTUBE" = "true" ]; then
             EXTRACTOR_ARGS="--extractor-args youtube:player_client=web"
+            YT_ARGS="--js-runtimes node --remote-components ejs:github"
           else
             EXTRACTOR_ARGS=""
+            YT_ARGS=""
           fi
 
-          # Скачиваем превью (обложку)
+          # Скачиваем превью
           yt-dlp \
             --cookies cookies.txt \
+            $EXTRACTOR_ARGS \
             --write-thumbnail \
             --convert-thumbnails jpg \
             --skip-download \
             --output "downloads/%(id)s.%(ext)s" \
             --no-playlist \
-            "${{ github.event.inputs.url }}"
+            "${{ github.event.inputs.url }}" || true
 
-          # Получаем метаданные в JSON
+          # Метаданные
           yt-dlp \
             --cookies cookies.txt \
+            $EXTRACTOR_ARGS \
             --dump-json \
             --no-playlist \
-            "${{ github.event.inputs.url }}" > downloads/metadata.json
+            "${{ github.event.inputs.url }}" > downloads/metadata.json || echo "{}" > downloads/metadata.json
 
-          # Скачиваем видео или аудио
-          if [ "${{ github.event.inputs.quality }}" = "mp3" ]; then
+          # Скачиваем видео/аудио
+          Q="${{ github.event.inputs.quality }}"
+
+          if [ "$Q" = "mp3" ]; then
             yt-dlp \
               --cookies cookies.txt \
-              --js-runtimes "node" \
-              --remote-components "ejs:github" \
+              $YT_ARGS \
               $EXTRACTOR_ARGS \
               --format "bestaudio/best" \
               --extract-audio --audio-format mp3 \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist \
               "${{ github.event.inputs.url }}"
-          else
-            Q="${{ github.event.inputs.quality }}"
-            # Для 1080p используем склейку видео+аудио (только для YouTube)
-            if [ "$Q" = "1080" ] && [ "$IS_YOUTUBE" = "true" ]; then
-              FORMAT="bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio"
-            else
-              FORMAT="best[height<=${Q}]/best"
-            fi
+
+          elif [ "$Q" = "1080" ] && [ "$IS_YOUTUBE" = "true" ]; then
             yt-dlp \
               --cookies cookies.txt \
-              --js-runtimes "node" \
-              --remote-components "ejs:github" \
+              $YT_ARGS \
               $EXTRACTOR_ARGS \
-              --format "$FORMAT" \
+              --format "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio" \
+              --merge-output-format mp4 \
+              --output "downloads/%(id)s.%(ext)s" \
+              --no-playlist \
+              "${{ github.event.inputs.url }}"
+
+          else
+            yt-dlp \
+              --cookies cookies.txt \
+              $YT_ARGS \
+              $EXTRACTOR_ARGS \
+              --format "best[height<=${Q}]/best" \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist \
               "${{ github.event.inputs.url }}"
           fi
 
           # Находим файлы
-          VIDEO_FILE=$(ls downloads/ | grep -v ".jpg" | grep -v "metadata.json" | head -1)
-          THUMB_FILE=$(ls downloads/*.jpg 2>/dev/null | head -1)
-          
+          VIDEO_FILE=$(ls downloads/ | grep -vE "\.jpg$|metadata\.json" | head -1)
+          THUMB_FILE=$(ls downloads/*.jpg 2>/dev/null | head -1 || echo "")
+
           # Читаем метаданные
-          TITLE=$(cat downloads/metadata.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('title', 'Unknown')[:100])")
-          DURATION=$(cat downloads/metadata.json | python3 -c "import sys,json; d=json.load(sys.stdin).get('duration', 0); print(f'{int(d)//60}:{int(d)%60:02d}' if d else 'N/A')")
-          UPLOADER=$(cat downloads/metadata.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('uploader', 'Unknown'))")
+          TITLE=$(python3 -c "import sys,json; d=json.load(open('downloads/metadata.json')); print(d.get('title','Unknown')[:100])" 2>/dev/null || echo "Unknown")
+          DURATION=$(python3 -c "import sys,json; d=json.load(open('downloads/metadata.json')); t=d.get('duration',0); print(f'{int(t)//60}:{int(t)%60:02d}' if t else 'N/A')" 2>/dev/null || echo "N/A")
+          UPLOADER=$(python3 -c "import sys,json; d=json.load(open('downloads/metadata.json')); print(d.get('uploader','Unknown'))" 2>/dev/null || echo "Unknown")
+          SIZE=$(du -m "downloads/$VIDEO_FILE" | cut -f1)
 
           echo "filename=downloads/$VIDEO_FILE" >> $GITHUB_OUTPUT
-          echo "thumbnail=$THUMB_FILE" >> $GITHUB_OUTPUT
-          echo "title=$TITLE" >> $GITHUB_OUTPUT
-          echo "duration=$DURATION" >> $GITHUB_OUTPUT
-          echo "uploader=$UPLOADER" >> $GITHUB_OUTPUT
-          
-          SIZE=$(du -m "downloads/$VIDEO_FILE" | cut -f1)
-          echo "size=$SIZE" >> $GITHUB_OUTPUT
+          echo "thumbnail=$THUMB_FILE"          >> $GITHUB_OUTPUT
+          echo "title=$TITLE"                   >> $GITHUB_OUTPUT
+          echo "duration=$DURATION"             >> $GITHUB_OUTPUT
+          echo "uploader=$UPLOADER"             >> $GITHUB_OUTPUT
+          echo "size=$SIZE"                     >> $GITHUB_OUTPUT
 
-      - name: Send preview and file to Telegram
+      - name: Send to Telegram
         run: |
           FILE="${{ steps.download.outputs.filename }}"
           THUMB="${{ steps.download.outputs.thumbnail }}"
@@ -139,20 +145,17 @@ jobs:
             exit 0
           fi
 
-          # Формируем текст сообщения
-          if [ "$QUALITY" = "mp3" ]; then
-            CAPTION="🎵 *${TITLE}*\\n\\n👤 ${UPLOADER}\\n⏱ ${DURATION}\\n\\n🎧 MP3 • ${SIZE} МБ"
-          else
-            CAPTION="🎬 *${TITLE}*\\n\\n👤 ${UPLOADER}\\n⏱ ${DURATION}\\n\\n📺 ${QUALITY}p • ${SIZE} МБ"
-          fi
-
-          # Отправляем превью с подписью
+          # Отправляем превью
           if [ -n "$THUMB" ] && [ -f "$THUMB" ]; then
+            if [ "$QUALITY" = "mp3" ]; then
+              CAPTION="🎵 ${TITLE} | 👤 ${UPLOADER} | ⏱ ${DURATION} | 🎧 MP3 • ${SIZE} МБ"
+            else
+              CAPTION="🎬 ${TITLE} | 👤 ${UPLOADER} | ⏱ ${DURATION} | 📺 ${QUALITY}p • ${SIZE} МБ"
+            fi
             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendPhoto" \
               -F chat_id="$CHAT_ID" \
               -F photo=@"$THUMB" \
-              -F caption="$CAPTION" \
-              -F parse_mode="MarkdownV2"
+              -F caption="$CAPTION"
           fi
 
           # Отправляем файл
@@ -163,11 +166,18 @@ jobs:
               -F title="$TITLE" \
               -F performer="$UPLOADER"
           else
-            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
-              -F chat_id="$CHAT_ID" \
-              -F video=@"$FILE" \
-              -F supports_streaming=true \
-              -F thumb=@"$THUMB"
+            if [ -n "$THUMB" ] && [ -f "$THUMB" ]; then
+              curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
+                -F chat_id="$CHAT_ID" \
+                -F video=@"$FILE" \
+                -F supports_streaming=true \
+                -F thumb=@"$THUMB"
+            else
+              curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
+                -F chat_id="$CHAT_ID" \
+                -F video=@"$FILE" \
+                -F supports_streaming=true
+            fi
           fi
 
       - name: Notify on failure
