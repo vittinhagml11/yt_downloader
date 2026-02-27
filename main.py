@@ -3,6 +3,9 @@ import threading
 import requests
 import hashlib
 import logging
+import sqlite3
+import base64
+from datetime import datetime
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler, filters, ContextTypes
@@ -12,6 +15,70 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# --- Database Setup ---
+DB_NAME = 'bot_database.db'
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            chat_id INTEGER PRIMARY KEY,
+            joined_date TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS downloads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER,
+            url TEXT,
+            quality TEXT,
+            timestamp TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def register_user(chat_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR IGNORE INTO users (chat_id, joined_date) VALUES (?, ?)', 
+                   (chat_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
+def record_download(chat_id: int, url: str, quality: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO downloads (chat_id, url, quality, timestamp) VALUES (?, ?, ?, ?)',
+                   (chat_id, url, quality, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
+def get_stats():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    total_users = cursor.fetchone()[0]
+    
+    today = datetime.now().strftime("%Y-%m-%d")
+    cursor.execute('SELECT COUNT(*) FROM downloads WHERE timestamp LIKE ?', (f'{today}%',))
+    downloads_today = cursor.fetchone()[0]
+    
+    conn.close()
+    return total_users, downloads_today
+
+def get_all_users():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('SELECT chat_id FROM users')
+    users = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return users
+
 
 flask_app = Flask(__name__)
 url_cache = {}
@@ -27,6 +94,7 @@ def run_flask():
 TOKEN    = os.getenv('BOT_TOKEN')
 GH_TOKEN = os.getenv('GITHUB_TOKEN')
 GH_REPO  = os.getenv('GITHUB_REPO')
+ADMIN_ID = os.getenv('ADMIN_ID')
 
 SUPPORTED_DOMAINS = [
     "youtube.com", "youtu.be",
@@ -38,6 +106,32 @@ SUPPORTED_DOMAINS = [
 def get_url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:8]
 
+def update_github_file(content: bytes, filename: str = 'cookies.txt') -> bool:
+    try:
+        url = f"https://api.github.com/repos/{GH_REPO}/contents/{filename}"
+        headers = {
+            "Authorization": f"Bearer {GH_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        # First get the sha of the existing file
+        resp = requests.get(url, headers=headers, timeout=10)
+        sha = resp.json().get('sha') if resp.status_code == 200 else None
+        
+        payload = {
+            "message": f"Update {filename} via Telegram bot",
+            "content": base64.b64encode(content).decode('utf-8'),
+            "branch": "main"
+        }
+        if sha:
+            payload["sha"] = sha
+            
+        put_resp = requests.put(url, json=payload, headers=headers, timeout=10)
+        return put_resp.status_code in [200, 201]
+    except Exception as e:
+        logger.error(f"Error updating github file: {e}")
+        return False
+        
 def trigger_github_action(url: str, quality: str, chat_id: str, reply_to_message_id=None) -> bool:
     try:
         api_url = f"https://api.github.com/repos/{GH_REPO}/actions/workflows/download.yml/dispatches"
@@ -64,11 +158,76 @@ def trigger_github_action(url: str, quality: str, chat_id: str, reply_to_message
         return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat:
+        register_user(update.effective_chat.id)
     await update.message.reply_text(
         "👋 *Привет!* Я YouTube-Downloader Bot\n\n"
         "Отправь мне ссылку или используй `@имя_бота ссылка`",
         parse_mode='Markdown'
     )
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    if ADMIN_ID and str(chat_id) != str(ADMIN_ID):
+        return
+        
+    total_users, today_downloads = get_stats()
+    text = (
+        "👑 *Панель Администратора*\n\n"
+        f"👥 Всего пользователей: *{total_users}*\n"
+        f"📥 Скачиваний за сегодня: *{today_downloads}*\n\n"
+        "📢 *Рассылка:*\n`/broadcast Текст сообщения`\n\n"
+        "🍪 *Обновление cookies.txt:*\nОтправь файл `cookies.txt` и в подписи укажи `/update_cookie`."
+    )
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    if ADMIN_ID and str(chat_id) != str(ADMIN_ID):
+        return
+        
+    text = update.message.text.replace("/broadcast", "").strip()
+    if not text:
+        await update.message.reply_text("❌ Введи текст для рассылки после команды `/broadcast`.", parse_mode='Markdown')
+        return
+        
+    users = get_all_users()
+    sent = 0
+    await update.message.reply_text("⏳ Начинаю рассылку...")
+    for u in users:
+        try:
+            await context.bot.send_message(u, text)
+            sent += 1
+        except Exception:
+            pass
+            
+    await update.message.reply_text(f"✅ Рассылка завершена. Доставлено: {sent} из {len(users)}.")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    if ADMIN_ID and str(chat_id) != str(ADMIN_ID):
+        return
+        
+    doc = update.message.document
+    caption = update.message.caption or ""
+    
+    if doc.file_name == 'cookies.txt' and '/update_cookie' in caption:
+        status_msg = await update.message.reply_text("⏳ Обновляю `cookies.txt` в репозитории...", parse_mode='Markdown')
+        try:
+            file = await context.bot.get_file(doc.file_id)
+            import io
+            out = io.BytesIO()
+            await file.download_to_memory(out)
+            content = out.getvalue()
+            
+            success = update_github_file(content, 'cookies.txt')
+            if success:
+                await status_msg.edit_text("✅ Файл `cookies.txt` успешно обновлён в репозитории!")
+            else:
+                await status_msg.edit_text("❌ Ошибка при обновлении файла на GitHub (проверьте права токена).")
+        except Exception as e:
+            logger.error(f"Document error: {e}")
+            await status_msg.edit_text("❌ Произошла внутренняя ошибка.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -193,7 +352,9 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Запускаем GitHub Action
         success = trigger_github_action(url, quality, chat_id, message_id)
-        if not success:
+        if success:
+            record_download(chat_id, url, quality)
+        else:
             await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу.")
 
     except Exception as e:
@@ -205,11 +366,14 @@ if __name__ == '__main__':
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
     
     # ВОТ ОНО - возвращаем обработчик всплывающего окна
     app.add_handler(InlineQueryHandler(inline_query))
     
     app.add_handler(CallbackQueryHandler(download_callback, pattern='^d_'))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     app.run_polling()
