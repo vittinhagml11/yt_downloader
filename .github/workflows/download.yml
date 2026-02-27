@@ -26,9 +26,6 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
       - name: Install ffmpeg (static binary)
         run: |
           wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
@@ -37,13 +34,12 @@ jobs:
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
 
       - name: Install yt-dlp
-        run: pip install -U yt-dlp curl_cffi
+        run: pip install -U yt-dlp
 
       - name: Write cookies
         run: |
-          if [ -n "${{ secrets.YOUTUBE_COOKIES }}" ]; then
-            echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
-          fi
+          echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
+          echo "${{ secrets.INSTA_COOKIES }}" > insta_cookies.txt
 
       - name: Download
         id: download
@@ -58,69 +54,53 @@ jobs:
             IS_YOUTUBE="true"
             EXTRACTOR_ARGS="--extractor-args youtube:player_client=web"
             YT_ARGS="--js-runtimes node --remote-components ejs:github"
+            COOKIE_FILE="cookies.txt"
+          elif echo "$CLEAN_URL" | grep -qE "instagram\.com"; then
+            IS_YOUTUBE="false"
+            EXTRACTOR_ARGS=""
+            YT_ARGS=""
+            COOKIE_FILE="insta_cookies.txt"
           else
             IS_YOUTUBE="false"
             EXTRACTOR_ARGS=""
             YT_ARGS=""
+            COOKIE_FILE="cookies.txt"
           fi
 
           # Превью
-          if [ "$IS_YOUTUBE" = "false" ]; then
-             yt-dlp \
-               $YT_ARGS $EXTRACTOR_ARGS \
-               --write-thumbnail --convert-thumbnails jpg \
-               --skip-download \
-               --output "downloads/%(id)s.%(ext)s" \
-               --no-playlist \
-               "$CLEAN_URL" || true
-          else
-             yt-dlp \
-               --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
-               --write-thumbnail --convert-thumbnails jpg \
-               --skip-download \
-               --output "downloads/%(id)s.%(ext)s" \
-               --no-playlist \
-               "$CLEAN_URL" || true
-          fi
+          yt-dlp \
+            --cookies "$COOKIE_FILE" $EXTRACTOR_ARGS \
+            --write-thumbnail --convert-thumbnails jpg \
+            --skip-download \
+            --output "downloads/%(id)s.%(ext)s" \
+            --no-playlist \
+            "$CLEAN_URL" || true
 
           # Метаданные
-          if [ "$IS_YOUTUBE" = "false" ]; then
-             yt-dlp \
-               $YT_ARGS $EXTRACTOR_ARGS \
-               --dump-json --no-playlist \
-               "$CLEAN_URL" > downloads/metadata.json || echo "{}" > downloads/metadata.json
-          else
-             yt-dlp \
-               --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
-               --dump-json --no-playlist \
-               "$CLEAN_URL" > downloads/metadata.json || echo "{}" > downloads/metadata.json
-          fi
+          yt-dlp \
+            --cookies "$COOKIE_FILE" $EXTRACTOR_ARGS \
+            --dump-json --no-playlist \
+            "$CLEAN_URL" > downloads/metadata.json || echo "{}" > downloads/metadata.json
 
           # Скачивание
           Q="${{ github.event.inputs.quality }}"
-          
-          if [ "$IS_YOUTUBE" = "false" ]; then
-              COOKIE_ARG=""
-          else
-              COOKIE_ARG="--cookies cookies.txt"
-          fi
 
           if [ "$Q" = "mp3" ]; then
-            yt-dlp $COOKIE_ARG $YT_ARGS $EXTRACTOR_ARGS \
+            yt-dlp --cookies "$COOKIE_FILE" $YT_ARGS $EXTRACTOR_ARGS \
               --format "bestaudio/best" \
               --extract-audio --audio-format mp3 \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist "$CLEAN_URL"
 
           elif [ "$Q" = "1080" ] && [ "$IS_YOUTUBE" = "true" ]; then
-            yt-dlp $COOKIE_ARG $YT_ARGS $EXTRACTOR_ARGS \
+            yt-dlp --cookies "$COOKIE_FILE" $YT_ARGS $EXTRACTOR_ARGS \
               --format "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio" \
               --merge-output-format mp4 \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist "$CLEAN_URL"
 
           else
-            yt-dlp $COOKIE_ARG $YT_ARGS $EXTRACTOR_ARGS \
+            yt-dlp --cookies "$COOKIE_FILE" $YT_ARGS $EXTRACTOR_ARGS \
               --format "best[height<=${Q}]/best" \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist "$CLEAN_URL"
