@@ -58,15 +58,20 @@ jobs:
             IS_YOUTUBE="true"
             EXTRACTOR_ARGS="--extractor-args youtube:player_client=web"
             YT_ARGS="--js-runtimes node --remote-components ejs:github"
+          elif echo "$CLEAN_URL" | grep -qE "tiktok\.com"; then
+            IS_YOUTUBE="false"
+            EXTRACTOR_ARGS=""
+            YT_ARGS="--impersonate chrome"
           else
             IS_YOUTUBE="false"
             EXTRACTOR_ARGS=""
-            YT_ARGS=""
+            # Using impersonate often helps bypass rate limits for Instagram as well
+            YT_ARGS="--impersonate Safari"
           fi
 
           # Превью
           yt-dlp \
-            --cookies cookies.txt $EXTRACTOR_ARGS \
+            --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
             --write-thumbnail --convert-thumbnails jpg \
             --skip-download \
             --output "downloads/%(id)s.%(ext)s" \
@@ -75,7 +80,7 @@ jobs:
 
           # Метаданные
           yt-dlp \
-            --cookies cookies.txt $EXTRACTOR_ARGS \
+            --cookies cookies.txt $YT_ARGS $EXTRACTOR_ARGS \
             --dump-json --no-playlist \
             "$CLEAN_URL" > downloads/metadata.json || echo "{}" > downloads/metadata.json
 
