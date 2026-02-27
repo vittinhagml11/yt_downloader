@@ -37,7 +37,7 @@ jobs:
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
 
       - name: Install yt-dlp
-        run: pip install -U yt-dlp
+        run: pip install -U yt-dlp curl_cffi
 
       - name: Write cookies
         run: |
