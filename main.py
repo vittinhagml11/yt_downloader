@@ -5,6 +5,7 @@ import hashlib
 import logging
 import sqlite3
 import base64
+import urllib.parse
 from datetime import datetime
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
@@ -37,10 +38,34 @@ def init_db():
             timestamp TEXT
         )
     ''')
+    try:
+        cursor.execute('ALTER TABLE downloads ADD COLUMN platform TEXT')
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
 init_db()
+
+def extract_platform(url: str) -> str:
+    try:
+        domain = urllib.parse.urlparse(url).netloc.lower()
+        if 'youtube.com' in domain or 'youtu.be' in domain:
+            return 'YouTube'
+        elif 'instagram.com' in domain:
+            return 'Instagram'
+        elif 'tiktok.com' in domain:
+            return 'TikTok'
+        elif 'twitter.com' in domain or 'x.com' in domain:
+            return 'Twitter/X'
+        elif 'rutube.ru' in domain:
+            return 'Rutube'
+        elif 'twitch.tv' in domain:
+            return 'Twitch'
+        else:
+            return 'Other'
+    except:
+        return 'Unknown'
 
 def register_user(chat_id: int):
     conn = sqlite3.connect(DB_NAME)
@@ -51,10 +76,11 @@ def register_user(chat_id: int):
     conn.close()
 
 def record_download(chat_id: int, url: str, quality: str):
+    platform = extract_platform(url)
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO downloads (chat_id, url, quality, timestamp) VALUES (?, ?, ?, ?)',
-                   (chat_id, url, quality, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    cursor.execute('INSERT INTO downloads (chat_id, url, quality, timestamp, platform) VALUES (?, ?, ?, ?, ?)',
+                   (chat_id, url, quality, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), platform))
     conn.commit()
     conn.close()
 
@@ -68,8 +94,14 @@ def get_stats():
     cursor.execute('SELECT COUNT(*) FROM downloads WHERE timestamp LIKE ?', (f'{today}%',))
     downloads_today = cursor.fetchone()[0]
     
+    cursor.execute('SELECT platform, COUNT(*) FROM downloads WHERE platform IS NOT NULL AND timestamp LIKE ? GROUP BY platform', (f'{today}%',))
+    platform_stats_today = dict(cursor.fetchall())
+    
+    cursor.execute('SELECT platform, COUNT(*) FROM downloads WHERE platform IS NOT NULL GROUP BY platform')
+    platform_stats_total = dict(cursor.fetchall())
+    
     conn.close()
-    return total_users, downloads_today
+    return total_users, downloads_today, platform_stats_today, platform_stats_total
 
 def get_all_users():
     conn = sqlite3.connect(DB_NAME)
@@ -101,6 +133,7 @@ SUPPORTED_DOMAINS = [
     "instagram.com", "tiktok.com",
     "twitter.com", "x.com",
     "soundcloud.com", "vimeo.com", "facebook.com",
+    "rutube.ru", "twitch.tv", "clips.twitch.tv",
 ]
 
 def get_url_hash(url: str) -> str:
@@ -161,9 +194,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat:
         register_user(update.effective_chat.id)
     await update.message.reply_text(
-        "👋 *Привет!* Я YouTube-Downloader Bot\n\n"
-        "Отправь мне ссылку или используй `@имя_бота ссылка`",
-        parse_mode='Markdown'
+        "👋 <b>Привет!</b> Я твой медиа-бот!\n\n"
+        "🎬 Я умею скачивать видео из <b>YouTube, Instagram, TikTok, Twitter/X, Rutube, Twitch (клипы)</b> и других сервисов.\n\n"
+        "👇 <b>Как использовать:</b>\n"
+        "• Просто отправь мне ссылку в этот чат.\n"
+        "• Или напиши <code>@твой_бот ссылка</code> в любом другом чате, чтобы выбрать качество!\n\n"
+        "✨ <i>Жду твою ссылку...</i>",
+        parse_mode='HTML'
     )
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -171,15 +208,21 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and str(chat_id) != str(ADMIN_ID):
         return
         
-    total_users, today_downloads = get_stats()
+    total_users, today_downloads, p_today, p_total = get_stats()
+    
+    stats_today_str = "\n".join([f"  • {p}: {c}" for p, c in p_today.items()]) if p_today else "  Нет данных"
+    stats_total_str = "\n".join([f"  • {p}: {c}" for p, c in p_total.items()]) if p_total else "  Нет данных"
+    
     text = (
-        "👑 *Панель Администратора*\n\n"
-        f"👥 Всего пользователей: *{total_users}*\n"
-        f"📥 Скачиваний за сегодня: *{today_downloads}*\n\n"
-        "📢 *Рассылка:*\n`/broadcast Текст сообщения`\n\n"
-        "🍪 *Обновление cookies.txt:*\nОтправь файл `cookies.txt` и в подписи укажи `/update_cookie`."
+        "👑 <b>Панель Администратора</b>\n\n"
+        f"👥 <b>Всего пользователей (включая группы):</b> {total_users}\n"
+        f"📥 <b>Скачиваний за сегодня:</b> {today_downloads}\n"
+        f"📊 <b>По платформам (сегодня):</b>\n{stats_today_str}\n\n"
+        f"📈 <b>По платформам (всего):</b>\n{stats_total_str}\n\n"
+        "📢 <b>Рассылка:</b>\n<code>/broadcast Текст сообщения</code>\n\n"
+        "🍪 <b>Обновление cookies:</b>\nОтправь файл <code>cookies.txt</code> или <code>insta_cookies.txt</code> и в подписи укажи <code>/update_cookie</code>."
     )
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(text, parse_mode='HTML')
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -193,15 +236,15 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     users = get_all_users()
     sent = 0
-    await update.message.reply_text("⏳ Начинаю рассылку...")
+    await update.message.reply_text("⏳ <b>Начинаю рассылку...</b>", parse_mode='HTML')
     for u in users:
         try:
-            await context.bot.send_message(u, text)
+            await context.bot.send_message(u, text, parse_mode='HTML')
             sent += 1
         except Exception:
             pass
             
-    await update.message.reply_text(f"✅ Рассылка завершена. Доставлено: {sent} из {len(users)}.")
+    await update.message.reply_text(f"✅ <b>Рассылка завершена.</b>\nДоставлено: <b>{sent}</b> из <b>{len(users)}</b>.", parse_mode='HTML')
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
@@ -211,8 +254,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     caption = update.message.caption or ""
     
-    if doc.file_name == 'cookies.txt' and '/update_cookie' in caption:
-        status_msg = await update.message.reply_text("⏳ Обновляю `cookies.txt` в репозитории...", parse_mode='Markdown')
+    if doc.file_name in ['cookies.txt', 'insta_cookies.txt'] and '/update_cookie' in caption:
+        status_msg = await update.message.reply_text(f"⏳ Обновляю <code>{doc.file_name}</code> в репозитории...", parse_mode='HTML')
         try:
             file = await context.bot.get_file(doc.file_id)
             import io
@@ -220,20 +263,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await file.download_to_memory(out)
             content = out.getvalue()
             
-            success = update_github_file(content, 'cookies.txt')
+            success = update_github_file(content, doc.file_name)
             if success:
-                await status_msg.edit_text("✅ Файл `cookies.txt` успешно обновлён в репозитории!")
+                await status_msg.edit_text(f"✅ Файл <code>{doc.file_name}</code> успешно обновлён в репозитории!", parse_mode='HTML')
             else:
-                await status_msg.edit_text("❌ Ошибка при обновлении файла на GitHub (проверьте права токена).")
+                await status_msg.edit_text("❌ Ошибка при обновлении файла на GitHub (проверьте права токена).", parse_mode='HTML')
         except Exception as e:
             logger.error(f"Document error: {e}")
-            await status_msg.edit_text("❌ Произошла внутренняя ошибка.")
+            await status_msg.edit_text("❌ Произошла внутренняя ошибка.", parse_mode='HTML')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Обработка обычных сообщений.
     В группе бот реагирует ТОЛЬКО если есть упоминание @бота.
     """
+    if update.effective_chat:
+        register_user(update.effective_chat.id)
+
     text = update.message.text
     if not text:
         return
@@ -254,21 +300,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not url:
         return
+        
+    url_str = str(url)
 
-    url_hash = get_url_hash(url)
-    url_cache[url_hash] = url
-    context.application.bot_data[url_hash] = url
+    if 'twitch.tv' in url_str and '/clip/' not in url_str and 'clips.twitch.tv' not in url_str:
+        await update.message.reply_text("⚠️ <b>Ошибка:</b> Я могу скачивать только клипы с Twitch, а не полные трансляции.", parse_mode='HTML', reply_to_message_id=update.message.message_id)
+        return
+
+    url_hash = get_url_hash(url_str)
+    url_cache[url_hash] = url_str
+    context.application.bot_data[url_hash] = url_str
 
     keyboard = [
+        [InlineKeyboardButton("📺 1080p (YouTube)", callback_data=f'd_{url_hash}_1080')],
         [InlineKeyboardButton("📺 720p",  callback_data=f'd_{url_hash}_720'),
-         InlineKeyboardButton("📱 480p",  callback_data=f'd_{url_hash}_480')],
-        [InlineKeyboardButton("🎵 MP3", callback_data=f'd_{url_hash}_mp3')]
+         InlineKeyboardButton("📱 480p",  callback_data=f'd_{url_hash}_480')]
     ]
 
     await update.message.reply_text(
-        "🎛 *Выбери качество:*",
+        "🎛 <b>Выбери качество:</b>",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_to_message_id=update.message.message_id
     )
 
@@ -290,18 +342,29 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             results = [InlineQueryResultArticle(
                 id='help',
                 title='🔍 Введите ссылку на видео',
-                description='YouTube, TikTok, Instagram, Twitter, Vimeo, SoundCloud',
-                input_message_content=InputTextMessageContent(message_text='Напиши @bot https://youtube.com/...')
+                description='YouTube, TikTok, Insta, Twitter, Rutube, Twitch Клипы',
+                input_message_content=InputTextMessageContent(message_text='Отправь правильную ссылку на видео (@bot ссылка)')
             )]
             await update.inline_query.answer(results, cache_time=0)
             return
-
-        url_hash = get_url_hash(url)
-        url_cache[url_hash] = url
-        context.application.bot_data[url_hash] = url
+            
+        url_str = str(url)
+        if 'twitch.tv' in url_str and '/clip/' not in url_str and 'clips.twitch.tv' not in url_str:
+            results = [InlineQueryResultArticle(
+                id='help',
+                title='🔍 Введите ссылку на клип Twitch',
+                description='Принимаются только клипы (не трансляции)',
+                input_message_content=InputTextMessageContent(message_text='Отправь правильную ссылку на клип.')
+            )]
+            await update.inline_query.answer(results, cache_time=0)
+            return
+            
+        url_hash = get_url_hash(url_str)
+        url_cache[url_hash] = url_str
+        context.application.bot_data[url_hash] = url_str
 
         label   = '720p'
-        short_url = url[:50] + '...' if len(url) > 50 else url
+        short_url = url_str[:50] + '...' if len(url_str) > 50 else url_str
 
         # Кнопка под inline сообщением
         keyboard = InlineKeyboardMarkup([[
@@ -337,25 +400,27 @@ async def download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not url:
             await query.edit_message_text("⚠️ Ссылка устарела. Отправь её заново.")
             return
+            
+        url_str = str(url)
 
         # Если кнопка была под ОБЫЧНЫМ сообщением (в ЛС или группе)
         if query.message:
             chat_id = query.message.chat_id
             message_id = query.message.message_id
-            await query.edit_message_text(f"⏳ Скачиваю {quality}...\nФайл придёт сюда через 1-2 минуты.")
+            await query.edit_message_text(f"⏳ <b>Скачиваю {quality}...</b>\n<i>Файл придёт сюда через 1-2 минуты.</i>", parse_mode='HTML')
             
         # Если кнопка была под INLINE (всплывающим) сообщением
         else:
             chat_id = query.from_user.id # Telegram скрывает ID группы, отправляем в ЛС
             message_id = None
-            await query.edit_message_text(f"⏳ Запускаю скачивание {quality}...\nВнимание: Файл придёт тебе в ЛС.")
+            await query.edit_message_text(f"⏳ <b>Запускаю скачивание {quality}...</b>\n<i>Внимание: Файл придёт тебе в ЛС.</i>", parse_mode='HTML')
 
         # Запускаем GitHub Action
-        success = trigger_github_action(url, quality, chat_id, message_id)
+        success = trigger_github_action(url_str, quality, str(chat_id), message_id)
         if success:
-            record_download(chat_id, url, quality)
+            record_download(chat_id, url_str, quality)
         else:
-            await context.bot.send_message(chat_id, "❌ Не удалось запустить задачу.")
+            await context.bot.send_message(chat_id, "❌ <b>Не удалось запустить задачу.</b>", parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"download_callback error: {e}", exc_info=True)

@@ -54,22 +54,22 @@ jobs:
             IS_YOUTUBE="true"
             EXTRACTOR_ARGS="--extractor-args youtube:player_client=web"
             YT_ARGS="--js-runtimes node --remote-components ejs:github"
-            COOKIE_FILE="cookies.txt"
+            COOKIE_ARG="--cookies cookies.txt"
           elif echo "$CLEAN_URL" | grep -qE "instagram\.com"; then
             IS_YOUTUBE="false"
             EXTRACTOR_ARGS=""
             YT_ARGS=""
-            COOKIE_FILE="insta_cookies.txt"
+            COOKIE_ARG="--cookies insta_cookies.txt"
           else
             IS_YOUTUBE="false"
             EXTRACTOR_ARGS=""
             YT_ARGS=""
-            COOKIE_FILE="cookies.txt"
+            COOKIE_ARG=""
           fi
 
           # Превью
           yt-dlp \
-            --cookies "$COOKIE_FILE" $EXTRACTOR_ARGS \
+            $COOKIE_ARG $EXTRACTOR_ARGS \
             --write-thumbnail --convert-thumbnails jpg \
             --skip-download \
             --output "downloads/%(id)s.%(ext)s" \
@@ -78,29 +78,21 @@ jobs:
 
           # Метаданные
           yt-dlp \
-            --cookies "$COOKIE_FILE" $EXTRACTOR_ARGS \
+            $COOKIE_ARG $EXTRACTOR_ARGS \
             --dump-json --no-playlist \
             "$CLEAN_URL" > downloads/metadata.json || echo "{}" > downloads/metadata.json
 
           # Скачивание
           Q="${{ github.event.inputs.quality }}"
 
-          if [ "$Q" = "mp3" ]; then
-            yt-dlp --cookies "$COOKIE_FILE" $YT_ARGS $EXTRACTOR_ARGS \
-              --format "bestaudio/best" \
-              --extract-audio --audio-format mp3 \
-              --output "downloads/%(id)s.%(ext)s" \
-              --no-playlist "$CLEAN_URL"
-
-          elif [ "$Q" = "1080" ] && [ "$IS_YOUTUBE" = "true" ]; then
-            yt-dlp --cookies "$COOKIE_FILE" $YT_ARGS $EXTRACTOR_ARGS \
+          if [ "$Q" = "1080" ] && [ "$IS_YOUTUBE" = "true" ]; then
+            yt-dlp $COOKIE_ARG $YT_ARGS $EXTRACTOR_ARGS \
               --format "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio" \
               --merge-output-format mp4 \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist "$CLEAN_URL"
-
           else
-            yt-dlp --cookies "$COOKIE_FILE" $YT_ARGS $EXTRACTOR_ARGS \
+            yt-dlp $COOKIE_ARG $YT_ARGS $EXTRACTOR_ARGS \
               --format "best[height<=${Q}]/best" \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist "$CLEAN_URL"
@@ -148,28 +140,19 @@ jobs:
           fi
 
 
-          if [ "$QUALITY" = "mp3" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendAudio" \
+          if [ -n "$THUMB" ] && [ -f "$THUMB" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
               -F chat_id="$CHAT_ID" \
-              -F audio=@"$FILE" \
-              -F title="$TITLE" \
-              -F performer="$UPLOADER" \
+              -F video=@"$FILE" \
+              -F supports_streaming=true \
+              -F thumb=@"$THUMB" \
               $REPLY_ARG
           else
-            if [ -n "$THUMB" ] && [ -f "$THUMB" ]; then
-              curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
-                -F chat_id="$CHAT_ID" \
-                -F video=@"$FILE" \
-                -F supports_streaming=true \
-                -F thumb=@"$THUMB" \
-                $REPLY_ARG
-            else
-              curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
-                -F chat_id="$CHAT_ID" \
-                -F video=@"$FILE" \
-                -F supports_streaming=true \
-                $REPLY_ARG
-            fi
+            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendVideo" \
+              -F chat_id="$CHAT_ID" \
+              -F video=@"$FILE" \
+              -F supports_streaming=true \
+              $REPLY_ARG
           fi
 
       - name: Notify on failure
