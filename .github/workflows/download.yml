@@ -76,11 +76,34 @@ jobs:
             --no-playlist \
             "$CLEAN_URL" || true
 
-          # Метаданные
+          # Метаданные (сначала проверяем вес)
           yt-dlp \
             $COOKIE_ARG $EXTRACTOR_ARGS \
             --dump-json --no-playlist \
             "$CLEAN_URL" > downloads/metadata.json || echo "{}" > downloads/metadata.json
+
+          # Проверка размера до скачивания
+          PRE_SIZE_BYTES=$(python3 -c "import json; d=json.load(open('downloads/metadata.json')); s=d.get('filesize') or d.get('filesize_approx') or 0; print(s)" 2>/dev/null || echo "0")
+          PRE_SIZE_MB=$(( PRE_SIZE_BYTES / 1024 / 1024 ))
+
+          if [ "$PRE_SIZE_MB" -gt 49 ]; then
+             echo "File is too large (${PRE_SIZE_MB}MB), skipping download."
+             
+             CHAT_ID="${{ github.event.inputs.chat_id }}"
+             TOKEN="${{ github.event.inputs.bot_token }}"
+             MESSAGE_ID="${{ github.event.inputs.message_id }}"
+             if [ -n "$MESSAGE_ID" ]; then
+               REPLY_ARG="-F reply_to_message_id=$MESSAGE_ID"
+             else
+               REPLY_ARG=""
+             fi
+             curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+                  -d chat_id="$CHAT_ID" \
+                  -d text="⚠️ <b>Ошибка:</b> Размер видео превышает лимит Telegram в 50 МБ (Ожидаемый вес: ~${PRE_SIZE_MB} МБ)." \
+                  -d parse_mode="HTML" \
+                  ${MESSAGE_ID:+-d reply_to_message_id="$MESSAGE_ID"}
+             exit 0
+          fi
 
           # Скачивание
           Q="${{ github.event.inputs.quality }}"

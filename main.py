@@ -195,10 +195,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         register_user(update.effective_chat.id)
     await update.message.reply_text(
         "👋 <b>Привет!</b> Я твой медиа-бот!\n\n"
-        "🎬 Я умею скачивать видео из <b>YouTube, Instagram, TikTok, Twitter/X, Rutube, Twitch (клипы)</b> и других сервисов.\n\n"
+        "🎬 Я умею скачивать видео из <b>YouTube, Instagram, TikTok, Twitter/X, Rutube (полные видео), Twitch (клипы)</b>.\n\n"
         "👇 <b>Как использовать:</b>\n"
         "• Просто отправь мне ссылку в этот чат.\n"
-        "• Или напиши <code>@твой_бот ссылка</code> в любом другом чате, чтобы выбрать качество!\n\n"
+        "• Или добавь меня в беседу и напиши <code>@dwnlo_bot ссылка</code> в чате, чтобы выбрать качество!\n\n"
         "✨ <i>Жду твою ссылку...</i>",
         parse_mode='HTML'
     )
@@ -312,7 +312,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.bot_data[url_hash] = url_str
 
     keyboard = [
-        [InlineKeyboardButton("📺 1080p (YouTube)", callback_data=f'd_{url_hash}_1080')],
         [InlineKeyboardButton("📺 720p",  callback_data=f'd_{url_hash}_720'),
          InlineKeyboardButton("📱 480p",  callback_data=f'd_{url_hash}_480')]
     ]
