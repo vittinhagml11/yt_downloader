@@ -26,7 +26,9 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             chat_id INTEGER PRIMARY KEY,
-            joined_date TEXT
+            username TEXT,
+            joined_date TEXT,
+            request_count INTEGER DEFAULT 0
         )
     ''')
     cursor.execute('''
@@ -35,16 +37,52 @@ def init_db():
             chat_id INTEGER,
             url TEXT,
             quality TEXT,
-            timestamp TEXT
+            timestamp TEXT,
+            platform TEXT
         )
     ''')
+    # Migrate old schema if needed
+    try:
+        cursor.execute('ALTER TABLE users ADD COLUMN username TEXT')
+    except sqlite3.OperationalError: pass
+    try:
+        cursor.execute('ALTER TABLE users ADD COLUMN request_count INTEGER DEFAULT 0')
+    except sqlite3.OperationalError: pass
     try:
         cursor.execute('ALTER TABLE downloads ADD COLUMN platform TEXT')
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError: pass
     conn.commit()
     conn.close()
 
+def download_db_from_github():
+    if not GH_REPO or not GH_TOKEN:
+        logger.warning("GH_REPO or GH_TOKEN not set, skipping DB download.")
+        return
+    try:
+        url = f"https://api.github.com/repos/{GH_REPO}/contents/{DB_NAME}"
+        headers = {"Authorization": f"Bearer {GH_TOKEN}"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            content = base64.b64decode(resp.json()['content'])
+            with open(DB_NAME, 'wb') as f:
+                f.write(content)
+            logger.info("Database downloaded from GitHub.")
+        else:
+            logger.warning(f"Database not found on GitHub (status {resp.status_code}).")
+    except Exception as e:
+        logger.error(f"Error downloading DB from GitHub: {e}")
+
+def push_db_to_github():
+    if not GH_REPO or not GH_TOKEN: return
+    try:
+        with open(DB_NAME, 'rb') as f:
+            content = f.read()
+        update_github_file(content, DB_NAME)
+        logger.info("Database pushed to GitHub.")
+    except Exception as e:
+        logger.error(f"Error pushing DB to GitHub: {e}")
+
+download_db_from_github()
 init_db()
 
 def extract_platform(url: str) -> str:
@@ -67,13 +105,17 @@ def extract_platform(url: str) -> str:
     except:
         return 'Unknown'
 
-def register_user(chat_id: int):
+def register_user(chat_id: int, username: str | None = None):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('INSERT OR IGNORE INTO users (chat_id, joined_date) VALUES (?, ?)', 
-                   (chat_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    cursor.execute('''
+        INSERT INTO users (chat_id, username, joined_date) 
+        VALUES (?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET username = excluded.username
+    ''', (chat_id, username, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
+    push_db_to_github()
 
 def record_download(chat_id: int, url: str, quality: str):
     platform = extract_platform(url)
@@ -81,8 +123,10 @@ def record_download(chat_id: int, url: str, quality: str):
     cursor = conn.cursor()
     cursor.execute('INSERT INTO downloads (chat_id, url, quality, timestamp, platform) VALUES (?, ?, ?, ?, ?)',
                    (chat_id, url, quality, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), platform))
+    cursor.execute('UPDATE users SET request_count = request_count + 1 WHERE chat_id = ?', (chat_id,))
     conn.commit()
     conn.close()
+    push_db_to_github()
 
 def get_stats():
     conn = sqlite3.connect(DB_NAME)
@@ -100,8 +144,12 @@ def get_stats():
     cursor.execute('SELECT platform, COUNT(*) FROM downloads WHERE platform IS NOT NULL GROUP BY platform')
     platform_stats_total = dict(cursor.fetchall())
     
+    # Get Top-20 users
+    cursor.execute('SELECT username, chat_id, request_count FROM users ORDER BY request_count DESC LIMIT 20')
+    top_users = cursor.fetchall()
+    
     conn.close()
-    return total_users, downloads_today, platform_stats_today, platform_stats_total
+    return total_users, downloads_today, platform_stats_today, platform_stats_total, top_users
 
 def get_all_users():
     conn = sqlite3.connect(DB_NAME)
@@ -181,6 +229,7 @@ def trigger_github_action(url: str, quality: str, chat_id: str, reply_to_message
                 "chat_id":    str(chat_id),
                 "bot_token":  TOKEN,
                 "message_id": str(reply_to_message_id) if reply_to_message_id else "",
+                "admin_id":   str(ADMIN_ID) if ADMIN_ID else ""
             }
         }
         resp = requests.post(api_url, json=payload, headers=headers, timeout=10)
@@ -192,7 +241,9 @@ def trigger_github_action(url: str, quality: str, chat_id: str, reply_to_message
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat:
-        register_user(update.effective_chat.id)
+        user = update.effective_user
+        username = f"@{user.username}" if user and user.username else (user.full_name if user else None)
+        register_user(update.effective_chat.id, username)
     await update.message.reply_text(
         "👋 <b>Привет!</b> Я твой медиа-бот!\n\n"
         "🎬 Я умею скачивать видео из <b>YouTube, Instagram, TikTok, Twitter/X, Rutube (полные видео), Twitch (клипы)</b>.\n\n"
@@ -208,17 +259,20 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_ID and str(chat_id) != str(ADMIN_ID):
         return
         
-    total_users, today_downloads, p_today, p_total = get_stats()
+    total_users, today_downloads, p_today, p_total, top_users = get_stats()
     
     stats_today_str = "\n".join([f"  • {p}: {c}" for p, c in p_today.items()]) if p_today else "  Нет данных"
     stats_total_str = "\n".join([f"  • {p}: {c}" for p, c in p_total.items()]) if p_total else "  Нет данных"
     
+    top_users_str = "\n".join([f"  • {u or 'Hidden' if u else c}: {r}" for u, c, r in top_users if r > 0]) or "  Нет запросов"
+    
     text = (
         "👑 <b>Панель Администратора</b>\n\n"
         f"👥 <b>Всего пользователей (включая группы):</b> {total_users}\n"
-        f"📥 <b>Скачиваний за сегодня:</b> {today_downloads}\n"
+        f"📥 <b>Скачиваний за сегодня:</b> {today_downloads}\n\n"
         f"📊 <b>По платформам (сегодня):</b>\n{stats_today_str}\n\n"
         f"📈 <b>По платформам (всего):</b>\n{stats_total_str}\n\n"
+        f"🏆 <b>Топ-20 пользователей:</b>\n{top_users_str}\n\n"
         "📢 <b>Рассылка:</b>\n<code>/broadcast Текст сообщения</code>\n\n"
         "🍪 <b>Обновление cookies:</b>\nОтправь файл <code>cookies.txt</code> или <code>insta_cookies.txt</code> и в подписи укажи <code>/update_cookie</code>."
     )

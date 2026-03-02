@@ -19,6 +19,10 @@ on:
         description: 'Reply to message_id (optional)'
         required: false
         default: ''
+      admin_id:
+        description: 'Admin ID for failure notifications'
+        required: false
+        default: ''
 
 jobs:
   download:
@@ -26,6 +30,9 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Install ffmpeg (static binary)
         run: |
           wget -q https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
@@ -36,10 +43,16 @@ jobs:
       - name: Install yt-dlp
         run: pip install -U yt-dlp
 
-      - name: Write cookies
+      - name: Prepare cookies
         run: |
-          echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
-          echo "${{ secrets.INSTA_COOKIES }}" > insta_cookies.txt
+          # Используем cookies из репозитория (обновлённые через бота).
+          # Если файл в репо отсутствует или пуст — фолбэк на GitHub Secrets.
+          if [ ! -s cookies.txt ]; then
+            echo "${{ secrets.YOUTUBE_COOKIES }}" > cookies.txt
+          fi
+          if [ ! -s insta_cookies.txt ]; then
+            echo "${{ secrets.INSTA_COOKIES }}" > insta_cookies.txt
+          fi
 
       - name: Download
         id: download
@@ -114,6 +127,45 @@ jobs:
               --merge-output-format mp4 \
               --output "downloads/%(id)s.%(ext)s" \
               --no-playlist "$CLEAN_URL"
+          elif echo "$CLEAN_URL" | grep -qE "tiktok\.com.*/photo/"; then
+            echo "Detected TikTok Photo Post. Building slideshow..."
+            # 1. Download audio
+            yt-dlp $COOKIE_ARG $EXTRACTOR_ARGS -f bestaudio -o "downloads/audio.%(ext)s" "$CLEAN_URL"
+            AUDIO_FILE=$(ls downloads/audio.* | head -1)
+            
+            # 2. Download all images (thumbnails)
+            # We use a python helper to extract all thumbnail URLs and download them
+            python3 -c "import json, os, requests; \
+          try:
+              with open('downloads/metadata.json') as f: data = json.load(f)
+              for i, t in enumerate(data.get('thumbnails', [])):
+                  u = t.get('url');
+                  if u:
+                      r = requests.get(u);
+                      if r.status_code == 200:
+                          with open(f'downloads/img_{i:03d}.jpg', 'wb') as f: f.write(r.content)
+          except Exception as e: print(f'Error: {e}')"
+            
+            # 3. Create slideshow with ffmpeg
+            # Each photo for 3 seconds
+            IMAGE_COUNT=$(ls downloads/img_*.jpg 2>/dev/null | wc -l)
+            if [ "$IMAGE_COUNT" -gt 0 ]; then
+              # Create a concat file for ffmpeg to ensure order and duration
+              for f in downloads/img_*.jpg; do
+                  echo "file '$(basename "$f")'" >> downloads/concat.txt
+                  echo "duration 3" >> downloads/concat.txt
+              done
+              # Add the last image once more (ffmpeg concat requirement for duration)
+              LAST_IMG=$(ls downloads/img_*.jpg | tail -1)
+              echo "file '$(basename "$LAST_IMG")'" >> downloads/concat.txt
+              
+              ffmpeg -f concat -i downloads/concat.txt -i "$AUDIO_FILE" \
+                     -c:v libx264 -pix_fmt yuv420p -r 25 -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+                     -c:a aac -shortest -y downloads/tiktok_slideshow.mp4
+            else
+              echo "No photos found, trying normal download..."
+              yt-dlp $COOKIE_ARG $EXTRACTOR_ARGS --format "best[height<=${Q}]/best" --output "downloads/%(id)s.%(ext)s" --no-playlist "$CLEAN_URL"
+            fi
           else
             yt-dlp $COOKIE_ARG $YT_ARGS $EXTRACTOR_ARGS \
               --format "best[height<=${Q}]/best" \
@@ -181,6 +233,20 @@ jobs:
       - name: Notify on failure
         if: failure()
         run: |
+          CHAT_ID="${{ github.event.inputs.chat_id }}"
+          # Get ADMIN_ID if passed, or fallback (we will update main.py to pass it)
+          ADMIN_ID="${{ github.event.inputs.admin_id }}"
+          URL="${{ github.event.inputs.url }}"
+          
+          # Notify User
           curl -s -X POST "https://api.telegram.org/bot${{ github.event.inputs.bot_token }}/sendMessage" \
-            -d chat_id="${{ github.event.inputs.chat_id }}" \
+            -d chat_id="$CHAT_ID" \
             -d text="❌ Ошибка при скачивании. Попробуй другое видео или качество."
+            
+          # Notify Admin (Task 4)
+          if [ -n "$ADMIN_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${{ github.event.inputs.bot_token }}/sendMessage" \
+              -d chat_id="$ADMIN_ID" \
+              -d text="🚨 <b>Ошибка загрузки!</b>%0A👤 User: <code>$CHAT_ID</code>%0A🔗 URL: $URL" \
+              -d parse_mode="HTML"
+          fi
