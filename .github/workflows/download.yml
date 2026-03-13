@@ -58,7 +58,7 @@ jobs:
         run: |
           git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
           cd bgutil-ytdlp-pot-provider
-          npm ci
+          npm install
           # Запускаем локальный сервер-генератор токенов на порту 4416 в фоне
           npm start &
           cd ..
