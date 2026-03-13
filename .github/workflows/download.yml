@@ -67,7 +67,8 @@ jobs:
             IS_YOUTUBE="true"
             EXTRACTOR_ARGS="--extractor-args youtube:player_client=ios,android"
             YT_ARGS="--js-runtimes node --remote-components ejs:github"
-            COOKIE_ARG="--cookies cookies.txt"
+            COOKIE_ARG=""
+            echo "Notice: Cookies are disabled for YouTube to allow iOS/Android clients to bypass GitHub Actions IP blocks."
           elif echo "$CLEAN_URL" | grep -qE "instagram\.com"; then
             IS_YOUTUBE="false"
             EXTRACTOR_ARGS=""
