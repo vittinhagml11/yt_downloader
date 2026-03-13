@@ -40,8 +40,12 @@ jobs:
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
 
-      - name: Install yt-dlp
-        run: pip install -U https://github.com/yt-dlp/yt-dlp/archive/master.zip
+      - name: Install yt-dlp and plugins
+        run: |
+          pip install -U https://github.com/yt-dlp/yt-dlp/archive/master.zip
+          pip install -U bgutil-ytdlp-pot-provider
+          # Install Node.js execution engine plugin for yt-dlp to fix EJS errors
+          pip install -U curl_cffi
 
       - name: Prepare cookies
         run: |
@@ -56,14 +60,9 @@ jobs:
 
       - name: Start PO Token Provider
         run: |
-          git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
-          cd bgutil-ytdlp-pot-provider/server
-          npm install
-          # Запускаем локальный сервер-генератор токенов на порту 4416 в фоне
-          node index.js &
-          cd ../..
-          # Ждем пару секунд для инициализации сервера
-          sleep 2
+          # Start the python-based local HTTP server provided by the plugin
+          python3 -m bgutil_ytdlp_pot_provider server &
+          sleep 3
 
       - name: Download
         id: download
@@ -76,8 +75,8 @@ jobs:
 
           if echo "$CLEAN_URL" | grep -qE "youtube\.com|youtu\.be"; then
             IS_YOUTUBE="true"
-            EXTRACTOR_ARGS="--extractor-args youtube:player_client=default,ios"
-            YT_ARGS="--js-runtimes node --remote-components ejs:github --po-token-port 4416"
+            EXTRACTOR_ARGS="--extractor-args youtube:player_client=default,ios --extractor-args youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416"
+            YT_ARGS="--js-runtimes node"
             COOKIE_ARG="--cookies cookies.txt"
           elif echo "$CLEAN_URL" | grep -qE "instagram\.com"; then
             IS_YOUTUBE="false"
