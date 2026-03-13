@@ -60,8 +60,12 @@ jobs:
 
       - name: Start PO Token Provider
         run: |
-          # Start the python-based local HTTP server provided by the plugin
-          python3 -m bgutil_ytdlp_pot_provider server &
+          git clone https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
+          cd bgutil-ytdlp-pot-provider/server
+          npm install
+          # Start the node server on port 4416
+          node index.js &
+          cd ../..
           sleep 3
 
       - name: Download
@@ -76,7 +80,7 @@ jobs:
           if echo "$CLEAN_URL" | grep -qE "youtube\.com|youtu\.be"; then
             IS_YOUTUBE="true"
             EXTRACTOR_ARGS="--extractor-args youtube:player_client=default,ios --extractor-args youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416"
-            YT_ARGS="--js-runtimes node"
+            YT_ARGS="--js-runtimes node --remote-components ejs:github"
             COOKIE_ARG="--cookies cookies.txt"
           elif echo "$CLEAN_URL" | grep -qE "instagram\.com"; then
             IS_YOUTUBE="false"
