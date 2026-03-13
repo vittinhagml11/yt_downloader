@@ -41,7 +41,7 @@ jobs:
           sudo mv ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
 
       - name: Install yt-dlp
-        run: pip install -U yt-dlp
+        run: pip install -U https://github.com/yt-dlp/yt-dlp/archive/master.zip
 
       - name: Prepare cookies
         run: |
@@ -65,7 +65,7 @@ jobs:
 
           if echo "$CLEAN_URL" | grep -qE "youtube\.com|youtu\.be"; then
             IS_YOUTUBE="true"
-            EXTRACTOR_ARGS="--extractor-args youtube:player_client=web"
+            EXTRACTOR_ARGS="--extractor-args youtube:player_client=default"
             YT_ARGS="--js-runtimes node --remote-components ejs:github"
             COOKIE_ARG="--cookies cookies.txt"
           elif echo "$CLEAN_URL" | grep -qE "instagram\.com"; then
