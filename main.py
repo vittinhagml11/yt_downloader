@@ -17,6 +17,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+TOKEN    = os.getenv('BOT_TOKEN')
+GH_TOKEN = os.getenv('GITHUB_TOKEN')
+GH_REPO  = os.getenv('GITHUB_REPO')
+ADMIN_ID = os.getenv('ADMIN_ID')
+
 # --- Database Setup ---
 DB_NAME = 'bot_database.db'
 
@@ -170,11 +175,6 @@ def home():
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port)
-
-TOKEN    = os.getenv('BOT_TOKEN')
-GH_TOKEN = os.getenv('GITHUB_TOKEN')
-GH_REPO  = os.getenv('GITHUB_REPO')
-ADMIN_ID = os.getenv('ADMIN_ID')
 
 SUPPORTED_DOMAINS = [
     "youtube.com", "youtu.be",
