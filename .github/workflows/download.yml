@@ -56,9 +56,12 @@ jobs:
 
       - name: Start PO Token Provider
         run: |
-          npm install -g bgutil-ytdlp-pot-provider
+          git clone https://github.com/bgutil/bgutil-ytdlp-pot-provider.git
+          cd bgutil-ytdlp-pot-provider
+          npm ci
           # Запускаем локальный сервер-генератор токенов на порту 4416 в фоне
-          bgutil-ytdlp-pot-provider &
+          npm start &
+          cd ..
           # Ждем пару секунд для инициализации сервера
           sleep 2
 
