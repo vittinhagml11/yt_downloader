@@ -65,7 +65,7 @@ jobs:
 
           if echo "$CLEAN_URL" | grep -qE "youtube\.com|youtu\.be"; then
             IS_YOUTUBE="true"
-            EXTRACTOR_ARGS="--extractor-args youtube:player_client=default"
+            EXTRACTOR_ARGS="--extractor-args youtube:player_client=ios,android"
             YT_ARGS="--js-runtimes node --remote-components ejs:github"
             COOKIE_ARG="--cookies cookies.txt"
           elif echo "$CLEAN_URL" | grep -qE "instagram\.com"; then
