@@ -54,6 +54,14 @@ jobs:
             echo "${{ secrets.INSTA_COOKIES }}" > insta_cookies.txt
           fi
 
+      - name: Start PO Token Provider
+        run: |
+          npm install -g bgutil-ytdlp-pot-provider
+          # Запускаем локальный сервер-генератор токенов на порту 4416 в фоне
+          bgutil-ytdlp-pot-provider &
+          # Ждем пару секунд для инициализации сервера
+          sleep 2
+
       - name: Download
         id: download
         run: |
@@ -65,10 +73,9 @@ jobs:
 
           if echo "$CLEAN_URL" | grep -qE "youtube\.com|youtu\.be"; then
             IS_YOUTUBE="true"
-            EXTRACTOR_ARGS="--extractor-args youtube:player_client=ios,android"
-            YT_ARGS="--js-runtimes node --remote-components ejs:github"
-            COOKIE_ARG=""
-            echo "Notice: Cookies are disabled for YouTube to allow iOS/Android clients to bypass GitHub Actions IP blocks."
+            EXTRACTOR_ARGS="--extractor-args youtube:player_client=default,ios"
+            YT_ARGS="--js-runtimes node --remote-components ejs:github --po-token-port 4416"
+            COOKIE_ARG="--cookies cookies.txt"
           elif echo "$CLEAN_URL" | grep -qE "instagram\.com"; then
             IS_YOUTUBE="false"
             EXTRACTOR_ARGS=""
